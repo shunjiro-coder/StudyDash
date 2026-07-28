@@ -1,0 +1,248 @@
+"""Self-hosted spaced repetition (feature 3) — simplified SM-2.
+
+Two-layer: update the card's CURRENT state (state/next_due_at/repetitions/
+current_interval/current_ease) AND append an immutable row to `reviews`.
+
+SM-2 (engineer-reviewed fixes):
+- `repetitions` (consecutive-correct count n) is a dedicated column — required
+  because a 4-button UI can't reconstruct n from the interval.
+- 4 buttons -> quality q, decided here:
+    again = lapse (repetitions->0, interval->1 day/翌日; EF still updated & clamped>=1.3)
+    hard  = q3,  good = q4,  easy = q5
+- No minute-level learning steps (simplified): `again` = next day.
+- "Today's review" = (next_due_at <= now OR state='new') AND state != 'suspended'
+  (suspended cards must not leak out via a past next_due_at).
+
+Anti-pileup UX (why self-hosted SRS survives): caps (new + due), never expose the
+grand total, and day-spread overdue cards (redistribute) instead of dumping them.
+"""
+
+from datetime import timedelta
+
+import db
+
+QUALITY = {"again": 1, "hard": 3, "good": 4, "easy": 5}
+
+
+def _ef_update(ef, q):
+    ef2 = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))
+    return max(1.3, round(ef2, 4))
+
+
+def answer(card_id, grade):
+    """Apply a review grade: update the card + append a reviews row."""
+    q = QUALITY.get(grade)
+    if q is None:
+        raise ValueError(f"bad grade: {grade}")
+    c = db.query_one("SELECT * FROM cards WHERE id=?", (card_id,))
+    if not c:
+        raise ValueError("no card")
+
+    ef = _ef_update(c["current_ease"] or 2.5, q)
+    if q < 3:  # again -> lapse
+        reps = 0
+        interval = 1
+    else:
+        reps = c["repetitions"] or 0
+        if reps == 0:
+            interval = 1
+        elif reps == 1:
+            interval = 6
+        else:
+            interval = max(1, round((c["current_interval"] or 1) * ef))
+        reps += 1
+
+    next_due = db.now_dt() + timedelta(days=interval)
+    next_due_iso = db.to_utc_iso(next_due)
+    # Card update + review append are one transaction: a mid-way failure must
+    # not leave the card advanced without its immutable reviews row (or vice
+    # versa). write_many commits both or rolls both back (C2).
+    db.write_many([
+        ("UPDATE cards SET state='review', repetitions=?, current_interval=?, "
+         "current_ease=?, next_due_at=? WHERE id=?",
+         (reps, interval, ef, next_due_iso, card_id)),
+        ("INSERT INTO reviews (card_id, reviewed_at, grade, interval_days, "
+         "ease_factor) VALUES (?, ?, ?, ?, ?)",
+         (card_id, db.now_utc_iso(), grade, interval, ef)),
+    ])
+    return {"card_id": card_id, "grade": grade, "repetitions": reps,
+            "interval_days": interval, "ease": ef, "next_due_at": next_due_iso}
+
+
+CARD_JOIN = (
+    "SELECT c.*, co.name AS course_name, co.subject_type AS subject_type, "
+    "m.original_path AS thumb_path "
+    "FROM cards c "
+    "LEFT JOIN courses co ON co.id = c.course_id "
+    "LEFT JOIN materials m ON m.id = c.material_id")
+
+
+def _exam_soon_courses(now_iso, within_days=7):
+    horizon = db.to_utc_iso(db.parse_iso(now_iso) + timedelta(days=within_days))
+    rows = db.query(
+        "SELECT DISTINCT course_id FROM assignments WHERE category='exam' "
+        "AND status IN ('todo','in_progress') AND due_at IS NOT NULL "
+        "AND due_at >= ? AND due_at <= ?", (now_iso, horizon))
+    return {r["course_id"] for r in rows if r["course_id"]}
+
+
+def _why_now(card, exam_courses):
+    if card["course_id"] in exam_courses:
+        return "テスト範囲"
+    if card["state"] == "new":
+        return "新規カード"
+    last = db.query_one(
+        "SELECT grade FROM reviews WHERE card_id=? ORDER BY id DESC LIMIT 1",
+        (card["id"],))
+    if last and last["grade"] == "again":
+        return "前回×"
+    return "復習日"
+
+
+def _card_out(r, exam_courses):
+    return {
+        "id": r["id"], "front": r["front"], "back": r["back"],
+        "topic": r["topic"], "origin": r["origin"], "confidence": r["confidence"],
+        "source_quote": r["source_quote"], "course_name": r["course_name"],
+        "subject_type": r["subject_type"], "state": r["state"],
+        "thumb_url": ("/" + r["thumb_path"]) if r["thumb_path"] else None,
+        "why_now": _why_now(r, exam_courses),
+    }
+
+
+def get_queue():
+    """Due + new cards, capped. Grand total is intentionally NOT returned."""
+    s = db.load_settings()
+    new_cap = int(s.get("review_new_cap", 10))
+    due_cap = int(s.get("review_due_cap", 20))
+    now_iso = db.now_utc_iso()
+    exam_courses = _exam_soon_courses(now_iso)
+    due = db.query(
+        CARD_JOIN + " WHERE c.state='review' AND c.next_due_at IS NOT NULL "
+        "AND c.next_due_at <= ? ORDER BY c.next_due_at ASC LIMIT ?",
+        (now_iso, due_cap))
+    new = db.query(
+        CARD_JOIN + " WHERE c.state='new' ORDER BY c.id ASC LIMIT ?", (new_cap,))
+    cards = [_card_out(r, exam_courses) for r in due] + \
+            [_card_out(r, exam_courses) for r in new]
+    return {"cards": cards, "new_count": len(new), "due_count": len(due)}
+
+
+def counts():
+    now_iso = db.now_utc_iso()
+    n = db.query_one(
+        "SELECT COUNT(*) n FROM cards WHERE state != 'suspended' AND "
+        "(state='new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
+        (now_iso,))["n"]
+    return n
+
+
+def report_verified(card_id, verdict):
+    """User pressed 'この問題おかしい'."""
+    if verdict not in ("ok", "wrong"):
+        raise ValueError("bad verdict")
+    db.write("UPDATE cards SET verified=? WHERE id=?", (verdict, card_id))
+
+
+def redistribute(days=7):
+    """Day-spread overdue cards so returning after a break doesn't dump them all."""
+    days = max(1, int(days))  # guard: days=0 would divide-by-zero on (i % days)
+    now = db.now_dt()
+    now_iso = db.now_utc_iso()
+    overdue = db.query(
+        "SELECT id FROM cards WHERE state='review' AND next_due_at IS NOT NULL "
+        "AND next_due_at < ? ORDER BY next_due_at ASC", (now_iso,))
+    for i, c in enumerate(overdue):
+        newdue = now + timedelta(days=(i % days))
+        db.write("UPDATE cards SET next_due_at=? WHERE id=?",
+                 (db.to_utc_iso(newdue), c["id"]))
+    return len(overdue)
+
+
+# --------------------------------------------------------------------------
+# Test mode (cram) — the Phase-4 centerpiece. Uses the tracker's exam data.
+# Ignores SM-2 spacing; front-loads the range across the days until the exam.
+# Stateless (recomputed daily): as the exam nears, days shrink -> more per day.
+# --------------------------------------------------------------------------
+def _cram_candidates(course_id=None, topic=None):
+    where, params = ["c.state != 'suspended'"], []
+    if course_id:
+        where.append("c.course_id = ?")
+        params.append(course_id)
+    if topic:
+        where.append("c.topic = ?")
+        params.append(topic)
+    return db.query(
+        CARD_JOIN + " WHERE " + " AND ".join(where) + " ORDER BY c.id", params)
+
+
+def cram_plan(exam_date_iso, course_id=None, topic=None):
+    """Return the full day-by-day distribution + today's batch."""
+    cards = _cram_candidates(course_id, topic)
+    exam = db.parse_iso(exam_date_iso)
+    today = db.now_dt().date()
+    days = max(1, (exam.date() - today).days)
+    per_day = [[] for _ in range(days)]
+    for i, c in enumerate(cards):
+        per_day[i % days].append(c["id"])
+    now_iso = db.now_utc_iso()
+    exam_courses = _exam_soon_courses(now_iso)
+    today_ids = set(per_day[0]) if per_day else set()
+    return {
+        "exam_date": exam_date_iso,
+        "days_left": days,
+        "total_cards": len(cards),
+        "per_day_counts": [len(d) for d in per_day],
+        "today": [_card_out(r, exam_courses) for r in cards if r["id"] in today_ids],
+    }
+
+
+def cram_for_assignment(assignment_id):
+    a = db.query_one("SELECT * FROM assignments WHERE id=?", (assignment_id,))
+    if not a or not a["due_at"]:
+        raise ValueError("exam assignment not found or has no date")
+    return cram_plan(a["due_at"], course_id=a["course_id"])
+
+
+# --------------------------------------------------------------------------
+# Mastery (%) and weak-card isolation + drill
+# --------------------------------------------------------------------------
+def mastery(course_id=None):
+    where, params = ["state != 'suspended'"], []
+    if course_id:
+        where.append("course_id = ?")
+        params.append(course_id)
+    cards = db.query(
+        "SELECT repetitions FROM cards WHERE " + " AND ".join(where), params)
+    if not cards:
+        return {"pct": 0, "total": 0, "mastered": 0}
+    mastered = sum(1 for c in cards if (c["repetitions"] or 0) >= 2)
+    return {"pct": round(100 * mastered / len(cards)),
+            "total": len(cards), "mastered": mastered}
+
+
+def weak_cards(limit=5):
+    now_iso = db.now_utc_iso()
+    exam_courses = _exam_soon_courses(now_iso)
+    rows = db.query(
+        CARD_JOIN + " WHERE c.state != 'suspended' AND (c.verified='wrong' OR "
+        "c.id IN (SELECT card_id FROM reviews WHERE grade='again' "
+        "GROUP BY card_id HAVING COUNT(*) >= 2)) ORDER BY c.id LIMIT ?",
+        (limit,))
+    return [_card_out(r, exam_courses) for r in rows]
+
+
+def drill(course_id=None, topic=None, limit=20):
+    where, params = ["c.state != 'suspended'"], []
+    if course_id:
+        where.append("c.course_id = ?")
+        params.append(course_id)
+    if topic:
+        where.append("c.topic = ?")
+        params.append(topic)
+    now_iso = db.now_utc_iso()
+    exam_courses = _exam_soon_courses(now_iso)
+    rows = db.query(
+        CARD_JOIN + " WHERE " + " AND ".join(where) +
+        " ORDER BY RANDOM() LIMIT ?", params + [limit])
+    return [_card_out(r, exam_courses) for r in rows]

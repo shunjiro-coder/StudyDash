@@ -1,0 +1,23 @@
+[tool.pytest.ini_options]
+# project root on sys.path so tests can `import db`, `from tests import seed`
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = ["venv", "backups", "uploads"]
+
+[tool.ruff.lint]
+# pyflakes (F) + pycodestyle (E) + a couple of safe bug-catchers.
+select = ["E", "F", "W", "B", "I"]
+ignore = [
+    "E501",   # line length is enforced loosely; long JP strings are fine
+    "E402",   # conftest sets env before importing db (intentional)
+    "B008",   # Flask/CLI default-arg patterns
+    "B904",   # ClaudeError/ClassroomError deliberately abstract the low-level cause
+    "B007",   # `for _ in range(retries)` — loop var intentionally unused
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

@@ -1,0 +1,161 @@
+"""Wrapper around the `claude` CLI (subprocess).
+
+Environment facts baked in (measured):
+- `claude` is NOT on PATH; real binary at ~/.local/bin/claude. Resolve absolute.
+- Nested `claude -p` works even under CLAUDECODE=1 (keychain auth passes).
+- Reading an image path works when cwd is the project root and --add-dir is
+  passed for uploads/. If unreadable it fails SILENTLY (no is_error) -> so we
+  always run with cwd=BASE_DIR and add the uploads dir.
+- --output-format json returns {result, is_error, subtype, total_cost_usd,...}.
+  is_error:true is also returned on rate-limit, so treat it as a failure.
+- Cost ~ $0.05/call; models are chosen per task via --model (settings.json).
+"""
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+
+import db
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class ClaudeError(Exception):
+    """Raised when the claude call fails (not found, timeout, non-JSON, is_error)."""
+
+    def __init__(self, message, raw=None, cost=0.0):
+        super().__init__(message)
+        self.raw = raw
+        self.cost = cost
+
+
+def resolve_claude():
+    """Absolute path to the claude binary (settings override > PATH > ~/.local)."""
+    s = db.load_settings()
+    override = s.get("claude_bin")
+    if override:
+        return os.path.expanduser(override)
+    found = shutil.which("claude")
+    if found:
+        return found
+    return os.path.expanduser("~/.local/bin/claude")
+
+
+def check_claude():
+    """Returns (ok, path). ok means the binary exists and is executable."""
+    path = resolve_claude()
+    ok = bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+    return ok, path
+
+
+def model_for(kind):
+    """kind: 'image' or 'text' -> configured model alias (or None = default)."""
+    s = db.load_settings()
+    return s.get("model_image") if kind == "image" else s.get("model_text")
+
+
+def run_claude(prompt, model=None, add_dirs=None, allowed_tools="Read",
+               timeout=180, cwd=None):
+    """Run `claude -p` and return the parsed JSON dict.
+
+    Raises ClaudeError on: binary missing, timeout (child + group killed),
+    non-JSON output, or is_error:true (incl. rate limit).
+    Returns dict with keys like 'result', 'total_cost_usd', 'is_error'.
+    """
+    ok, claude = check_claude()
+    if not ok:
+        raise ClaudeError(f"claude CLI not found or not executable: {claude}")
+
+    cmd = [claude, "-p", prompt, "--output-format", "json",
+           "--allowedTools", allowed_tools]
+    if model:
+        cmd += ["--model", model]
+    for d in (add_dirs or []):
+        cmd += ["--add-dir", d]
+
+    # start_new_session=True -> child is a process-group leader so we can kill
+    # the whole tree (claude may spawn grandchildren) on timeout.
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=cwd or BASE_DIR, start_new_session=True,
+        )
+    except OSError as e:
+        # spawn itself failed (ENOEXEC, EACCES, too many procs, ...). Without
+        # this wrap the material stays 'extracting' forever instead of failing.
+        raise ClaudeError(f"failed to spawn claude: {e}")
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise ClaudeError(f"claude timed out after {timeout}s")
+
+    if not out:
+        raise ClaudeError(
+            f"claude produced no output (exit {proc.returncode}): {(err or '')[:300]}")
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        raise ClaudeError(f"claude returned non-JSON: {out[:300]}", raw=out)
+
+    cost = float(data.get("total_cost_usd") or 0.0)
+    if data.get("is_error"):
+        subtype = data.get("subtype") or "error"
+        raise ClaudeError(
+            f"claude reported is_error ({subtype})",
+            raw=data.get("result") or out, cost=cost)
+    return data
+
+
+def result_text(data):
+    """Extract the assistant's textual result from a run_claude() dict."""
+    return (data.get("result") or "").strip()
+
+
+def extract_json(text):
+    """Pull the first JSON object out of a model response.
+
+    Handles ```json fences and leading/trailing prose. Returns the parsed
+    object, or raises ValueError if no valid JSON object is present.
+    """
+    if not text:
+        raise ValueError("empty response")
+    t = text.strip()
+    # strip code fences if present
+    if "```" in t:
+        import re
+        m = re.search(r"```(?:json)?\s*(.*?)```", t, re.DOTALL)
+        if m:
+            t = m.group(1).strip()
+    # try whole string first, then the outermost {...} span
+    for candidate in (t, _outermost_braces(t)):
+        if candidate is None:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("no valid JSON object found")
+
+
+def _outermost_braces(t):
+    start = t.find("{")
+    end = t.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return t[start:end + 1]
+
+
+if __name__ == "__main__":
+    ok, path = check_claude()
+    print(f"claude ok={ok} path={path}")

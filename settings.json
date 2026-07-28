@@ -1,0 +1,33 @@
+{
+  "claude_bin": null,
+  "model_image": "sonnet",
+  "model_text": "haiku",
+  "host": "127.0.0.1",
+  "port": 5000,
+  "share_token": null,
+  "cost_per_call_usd": 0.05,
+  "monthly_call_budget": 200,
+  "subject_keywords": {
+    "stem": ["数学", "算数", "物理", "化学", "math", "physics", "chem", "calculus", "algebra", "geometry", "statistics"],
+    "lang": ["英語", "国語", "漢字", "古文", "漢文", "現代文", "english", "japanese", "spanish", "french", "german", "chinese", "language", "語学"],
+    "memo": ["歴史", "日本史", "世界史", "生物", "地理", "公民", "政治", "経済", "倫理", "history", "biology", "geography", "social", "civics", "economics"],
+    "other": ["体育", "保健", "美術", "音楽", "技術", "家庭", "書道", "pe", "art", "music", "gym", "physical"]
+  },
+  "default_subject_type": "memo",
+  "category_weights": {
+    "exam": 1.0,
+    "quiz": 0.6,
+    "homework": 0.3,
+    "project": 0.5,
+    "other": 0.3
+  },
+  "priority_weights": {
+    "grade_impact": 0.5,
+    "deadline": 0.35,
+    "not_started": 0.15
+  },
+  "review_new_cap": 10,
+  "review_due_cap": 20,
+  "start_recommend_days_before": 3,
+  "big_task_minutes": 180
+}

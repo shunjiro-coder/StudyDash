@@ -1,0 +1,23 @@
+# secrets — never commit
+credentials.json
+token.json
+token.pickle
+
+# data + uploads (not re-obtainable / private)
+uploads/
+study.db
+study.db-wal
+study.db-shm
+exports/
+# local DB backups — git does NOT protect the data (see backup.py); these are
+# the real safety net, kept out of version control.
+backups/
+studydash.log
+
+# python
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>StudyDash</title>
+  <script>
+    // apply saved theme BEFORE first paint (avoids FOUC); no value -> follow OS via @media
+    try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div id="drop-overlay" class="drop-overlay hidden"><div>ここに落とす 📸</div></div>
+
+  <header class="app-header">
+    <div class="header-top">
+      <span class="brand">StudyDash</span>
+      <div class="header-status">
+        <span id="analyzing" class="chip hidden" title="解析中">⏳ <span id="analyzing-n">0</span></span>
+        <span id="sync-info" class="chip subtle" title="最終同期"></span>
+        <span id="cost-meter" class="chip subtle" title="今月の目安"></span>
+        <span id="backup-info" class="chip subtle warn hidden" title="バックアップ状態"></span>
+        <button id="theme-toggle" class="chip theme-toggle" type="button" aria-label="テーマ切替">☾</button>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="today">今日<span class="badge" id="badge-today"></span></button>
+      <button class="tab" data-tab="assignments">課題<span class="badge" id="badge-assignments"></span></button>
+      <button class="tab" data-tab="review">復習<span class="badge" id="badge-review"></span></button>
+      <button class="tab" data-tab="materials">教材<span class="badge" id="badge-materials"></span></button>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="panel active" id="panel-today"></section>
+    <section class="panel" id="panel-assignments"></section>
+    <section class="panel" id="panel-review"></section>
+    <section class="panel" id="panel-materials"></section>
+  </main>
+
+  <button id="add-fab" class="fab" title="追加 (n)">＋ 追加</button>
+
+  <!-- inline quick-add (opens anywhere) -->
+  <div id="add-form" class="add-form hidden">
+    <div class="add-row">
+      <input id="af-title" type="text" placeholder="課題名（例：演習問題 p.42）" autocomplete="off">
+      <input id="af-course" type="text" placeholder="教科（例：数学）" autocomplete="off" list="course-list">
+      <datalist id="course-list"></datalist>
+    </div>
+    <div class="add-row wrap">
+      <div class="seg" id="af-due">
+        <button data-due="today">今日</button>
+        <button data-due="tomorrow" class="on">明日</button>
+        <button data-due="week">今週末</button>
+        <button data-due="none">なし</button>
+        <input id="af-due-date" type="date">
+      </div>
+    </div>
+    <div class="add-row wrap">
+      <select id="af-category" title="種別">
+        <option value="homework">宿題</option>
+        <option value="quiz">小テスト</option>
+        <option value="exam">試験</option>
+        <option value="project">課題/レポート</option>
+        <option value="other">その他</option>
+      </select>
+      <div class="seg" id="af-minutes">
+        <button data-min="15">15分</button>
+        <button data-min="60" class="on">1時間</button>
+        <button data-min="180">数時間</button>
+      </div>
+      <input id="af-points" type="number" min="0" placeholder="配点" title="配点(任意)">
+    </div>
+    <div class="add-row end">
+      <button id="af-cancel" class="btn ghost">キャンセル</button>
+      <button id="af-save" class="btn primary">追加</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
