@@ -331,8 +331,28 @@ def api_meta():
             os.path.join(BASE_DIR, "credentials.json")),
         "cost": {"per_call": settings.get("cost_per_call_usd", 0.05),
                  "monthly_budget": settings.get("monthly_call_budget", 200)},
+        "content_lang": db.content_lang(),   # output language for generated study content
         "backup": backup.status(),   # passive health: {latest, age_days}
     })
+
+
+@app.route("/api/settings", methods=["GET", "PATCH"])
+def api_settings():
+    """Editable app settings. Currently just content_lang (auto|ja|en) — the output
+    language for AI-generated study content (cards/quiz/summary)."""
+    if request.method == "GET":
+        return jsonify({"content_lang": db.content_lang()})
+    data = request.get_json(silent=True) or {}
+    patch = {}
+    if "content_lang" in data:
+        v = (data.get("content_lang") or "").strip()
+        if v not in db.VALID_CONTENT_LANGS:
+            abort(400, "invalid content_lang")
+        patch["content_lang"] = v
+    if not patch:
+        abort(400, "nothing to update")
+    db.save_settings(patch)
+    return jsonify({"content_lang": db.content_lang()})
 
 
 # --------------------------------------------------------------------------

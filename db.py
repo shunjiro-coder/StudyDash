@@ -222,12 +222,55 @@ def locate(quote, text):
 # --------------------------------------------------------------------------
 # Settings + subject-type inference (shared)
 # --------------------------------------------------------------------------
+def _local_settings_path():
+    # Runtime overrides live in a sibling settings.local.json (untracked). Kept
+    # separate so app-written settings never churn the hand-formatted, tracked
+    # settings.json defaults.
+    base, ext = os.path.splitext(SETTINGS_PATH)
+    return base + ".local" + ext
+
+
 def load_settings():
-    try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    """Tracked defaults (settings.json) with runtime overrides (settings.local.json)
+    merged on top."""
+    s = {}
+    for p in (SETTINGS_PATH, _local_settings_path()):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                s.update(json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+    return s
+
+
+def save_settings(patch):
+    """Persist runtime overrides to settings.local.json (untracked), atomically,
+    leaving the tracked settings.json pristine. Returns the merged settings."""
+    p = _local_settings_path()
+    with _write_lock:
+        cur = {}
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                cur = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        cur.update(patch)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    return load_settings()
+
+
+# Output language for AI-generated STUDY CONTENT (cards / quiz / summary). 'auto'
+# follows the material's language; 'ja'/'en' force it (enables translation-style
+# study, e.g. English material -> Japanese cards). The UI chrome stays Japanese.
+VALID_CONTENT_LANGS = ("auto", "ja", "en")
+
+
+def content_lang():
+    v = load_settings().get("content_lang", "auto")
+    return v if v in VALID_CONTENT_LANGS else "auto"
 
 
 def infer_subject_type(name):

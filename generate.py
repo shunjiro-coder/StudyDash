@@ -38,6 +38,26 @@ QUIZ_MIN = 10
 QUIZ_STEP = 10
 QUIZ_MAX = 50
 QUIZ_CHARS_PER_Q = 220
+
+# Output-language directive injected into every generation prompt ({lang_line}).
+# Bilingual + emphatic so it actually overrides a Japanese prompt's pull toward
+# Japanese output. 'auto' matches the input; 'ja'/'en' force (and translate).
+LANG_DIRECTIVE = {
+    "auto": ("出力は入力（上の内容）と同じ言語で書く。英語なら英語、日本語なら日本語、"
+             "その他の言語ならその言語。/ IMPORTANT: write ALL output in the SAME "
+             "language as the input content above (English input -> answer fully "
+             "in English; Japanese input -> Japanese)."),
+    "ja": "出力は必ず日本語で書く（入力が何語でも日本語に翻訳して書く）。/ Write ALL output in Japanese.",
+    "en": "Write ALL output in English (translate it if the input is in another language).",
+}
+
+
+def _lang_line(lang=None):
+    """Resolve the output-language directive. `lang` None -> the saved global
+    setting (db.content_lang). Unknown values fall back to 'auto'."""
+    if lang not in db.VALID_CONTENT_LANGS:
+        lang = db.content_lang()
+    return LANG_DIRECTIVE.get(lang, LANG_DIRECTIVE["auto"])
 RAW_PREVIEW = 300
 FAIL_EXHAUSTED_MSG = (
     "何度か試しましたが解析できませんでした。お手数ですが手動で入力してください。")
@@ -116,7 +136,7 @@ def generate_for_material(material_id):
 
     prompt_path = PROMPTS.get(stype, PROMPTS["memo"])
     with open(prompt_path, encoding="utf-8") as f:
-        prompt = f.read().format(text=text)
+        prompt = f.read().format(text=text, lang_line=_lang_line())
     model = db.load_settings().get("model_text")
 
     db.write("UPDATE materials SET status='generating', error_message=NULL "
@@ -172,7 +192,8 @@ def recast_card(card_id, method):
     with open(RECAST_PROMPT, encoding="utf-8") as f:
         prompt = f.read().format(
             front=card["front"], back=card["back"],
-            method_name=method["name"], instruction=method["instruction"])
+            method_name=method["name"], instruction=method["instruction"],
+            lang_line=_lang_line())
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     front = (obj.get("front") or "").strip()
     back = (obj.get("back") or "").strip()
@@ -246,11 +267,12 @@ def _clean_quiz_questions(raw, fmt):
     return out
 
 
-def generate_quiz(material_id, fmt="written", count=None, scope=None):
+def generate_quiz(material_id, fmt="written", count=None, scope=None, lang=None):
     """Phase I: generate a comprehension quiz over a material (one AI call, sync).
     fmt = 'written' (all self-graded short-answer) | 'mixed' (AI picks written vs
-    4-choice per question). count None = auto-size from material length. Stores +
-    returns the quiz row. Raises ValueError on empty text / parse failure."""
+    4-choice per question). count None = auto-size from material length. lang None
+    = the saved output-language setting. Stores + returns the quiz row. Raises
+    ValueError on empty text / parse failure."""
     m, text = _material_text_or_raise(material_id)
     if not m:
         return None
@@ -266,7 +288,7 @@ def generate_quiz(material_id, fmt="written", count=None, scope=None):
                   else "教材全体を範囲とする。")
     with open(QUIZ_PROMPT, encoding="utf-8") as f:
         prompt = f.read().format(material=text, count=n, format_line=format_line,
-                                 scope_line=scope_line)
+                                 scope_line=scope_line, lang_line=_lang_line(lang))
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     questions = _clean_quiz_questions(obj.get("questions"), fmt)
     if not questions:
@@ -279,9 +301,10 @@ def generate_quiz(material_id, fmt="written", count=None, scope=None):
     return db.query_one("SELECT * FROM quizzes WHERE id=?", (qid,))
 
 
-def generate_summary(material_id, scope=None):
+def generate_summary(material_id, scope=None, lang=None):
     """Phase I: summarize a material into a Markdown study guide (要点まとめ).
-    Synchronous. Stores + returns the study_guides row."""
+    Synchronous. lang None = the saved output-language setting. Stores + returns
+    the study_guides row."""
     m, text = _material_text_or_raise(material_id)
     if not m:
         return None
@@ -289,7 +312,8 @@ def generate_summary(material_id, scope=None):
     scope_line = (f"特に次の範囲に集中する: {scope}" if scope
                   else "教材全体を対象とする。")
     with open(SUMMARY_PROMPT, encoding="utf-8") as f:
-        prompt = f.read().format(material=text, scope_line=scope_line)
+        prompt = f.read().format(material=text, scope_line=scope_line,
+                                 lang_line=_lang_line(lang))
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     md = (obj.get("summary_md") or "").strip()
     if not md:

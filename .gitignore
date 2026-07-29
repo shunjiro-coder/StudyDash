@@ -22,3 +22,6 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+
+# runtime setting overrides (app-written; keeps tracked settings.json pristine)
+settings.local.json

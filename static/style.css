@@ -910,3 +910,9 @@ textarea.rc-input { min-height: 84px; resize: vertical; line-height: 1.6; }
 .dg-empty { color: var(--muted); font-size: .8rem; padding: 2px 0 var(--sp-2); }
 .doc-folder-sel { max-width: 130px; padding: 2px 4px; border: 1px solid var(--border);
   border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-size: .78rem; }
+
+/* Phase I — output-language toggle (in study-modes section) */
+.sm-lang { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
+.sm-lang-lb { font-size: .78rem; color: var(--muted); font-weight: 600; }
+.sm-lang-sel { padding: 3px var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: .82rem; }

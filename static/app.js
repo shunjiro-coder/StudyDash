@@ -944,6 +944,29 @@ async function openMaterial(mid, highlight) {
 // material. Generated content follows the MATERIAL's language (handled server-side
 // in the prompts); the UI chrome stays Japanese.
 // -------------------------------------------------------------------------
+// Output language for AI-generated study content (cards/quiz/summary). Global
+// setting (persisted) so it governs background card generation AND on-demand
+// quiz/summary; 'auto' follows the material, ja/en force it (translation-style).
+function langToggleRow() {
+  const row = el("div", "sm-lang");
+  row.appendChild(el("span", "sm-lang-lb", "生成する学習内容の言語"));
+  const sel = el("select", "sm-lang-sel");
+  [["auto", "自動（教材に合わせる）"], ["ja", "日本語"], ["en", "English"]].forEach(([v, label]) => {
+    const o = el("option", "", label); o.value = v; sel.appendChild(o);
+  });
+  sel.value = (S.meta && S.meta.content_lang) || "auto";
+  sel.onclick = (e) => e.stopPropagation();
+  sel.onchange = async () => {
+    try {
+      await api("/api/settings", { method: "PATCH", body: JSON.stringify({ content_lang: sel.value }) });
+      if (S.meta) S.meta.content_lang = sel.value;
+      toast("出力言語を変更しました（次に生成する内容から反映されます）", true);
+    } catch (e) { toast("変更に失敗: " + e.message); }
+  };
+  row.appendChild(sel);
+  return row;
+}
+
 function smChip(icon, label, sub) {
   const b = el("button", "sm-chip"); b.type = "button";
   b.appendChild(el("span", "sm-ico", icon));
@@ -958,6 +981,7 @@ function studyModesSection(m, ov) {
   const sec = el("div", "study-modes");
   sec.appendChild(el("div", "sm-title", "学習モード"));
   sec.appendChild(el("div", "sm-sub", "この教材をどう学ぶか選べます。フラッシュカードは下のカード一覧、クイズとまとめはここから。"));
+  sec.appendChild(langToggleRow());
   const chips = el("div", "sm-chips");
   const flashN = (m.cards || []).length;
   const cFlash = smChip("📇", "フラッシュカード", flashN ? `${flashN}枚` : "下の一覧へ");

@@ -7,6 +7,7 @@
   "share_token": null,
   "cost_per_call_usd": 0.05,
   "monthly_call_budget": 200,
+  "content_lang": "auto",
   "subject_keywords": {
     "stem": ["数学", "算数", "物理", "化学", "math", "physics", "chem", "calculus", "algebra", "geometry", "statistics"],
     "lang": ["英語", "国語", "漢字", "古文", "漢文", "現代文", "english", "japanese", "spanish", "french", "german", "chinese", "language", "語学"],
