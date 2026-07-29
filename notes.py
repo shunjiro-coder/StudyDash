@@ -36,14 +36,26 @@ VALID_REM_TYPES = {
 # Serializers
 # --------------------------------------------------------------------------
 def doc_dict(r, extra=None):
+    keys = r.keys()
     d = {
         "id": r["id"], "title": r["title"], "course_id": r["course_id"],
         "is_daily": bool(r["is_daily"]), "daily_date": r["daily_date"],
         "archived": bool(r["archived"]),
+        # Phase I: which folder the note lives in (NULL = 未分類). The column is
+        # added by an additive migration, so tolerate rows read before it exists.
+        "folder_id": r["folder_id"] if "folder_id" in keys else None,
         "created_at": r["created_at"], "updated_at": r["updated_at"],
     }
     if extra:
         d.update(extra)
+    return d
+
+
+def folder_dict(r, doc_count=None):
+    d = {"id": r["id"], "name": r["name"], "position": r["position"],
+         "created_at": r["created_at"]}
+    if doc_count is not None:
+        d["doc_count"] = doc_count
     return d
 
 
@@ -232,6 +244,15 @@ def api_doc_update(did):
     if "course_id" in data:
         fields.append("course_id=?")
         params.append(data["course_id"])
+    if "folder_id" in data:
+        # Phase I: move a note into a folder (or NULL to un-file). Validate the
+        # target exists so a stale id can't orphan the note into a phantom folder.
+        fid = data["folder_id"]
+        if fid is not None and not db.query_one(
+                "SELECT id FROM folders WHERE id=?", (fid,)):
+            abort(400, "unknown folder")
+        fields.append("folder_id=?")
+        params.append(fid)
     if "archived" in data:
         fields.append("archived=?")
         params.append(1 if data["archived"] else 0)
@@ -251,6 +272,77 @@ def api_doc_delete(did):
     # Phase C will suspend cards derived from this doc's rems BEFORE deleting
     # (cards.rem_id doesn't exist yet). rems CASCADE via FK.
     db.write("DELETE FROM docs WHERE id=?", (did,))
+    return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------
+# Folders (Phase I) — user-named containers to organize notes. A note has at most
+# one folder (docs.folder_id); NULL = 未分類. Deleting a folder un-files its notes.
+# --------------------------------------------------------------------------
+@notes_bp.route("/api/folders")
+def api_folders():
+    rows = db.query("SELECT * FROM folders ORDER BY position, id")
+    counts = {r["folder_id"]: r["n"] for r in db.query(
+        "SELECT folder_id, COUNT(*) n FROM docs "
+        "WHERE archived=0 AND folder_id IS NOT NULL GROUP BY folder_id")}
+    return jsonify([folder_dict(r, counts.get(r["id"], 0)) for r in rows])
+
+
+@notes_bp.route("/api/folders", methods=["POST"])
+def api_folder_create():
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        abort(400, "name required")
+    now = db.now_utc_iso()
+    # Append at the end (max position + 1) so new folders sort last, stably.
+    mx = db.query_one("SELECT COALESCE(MAX(position), 0) mx FROM folders")["mx"]
+    new_id = db.write(
+        "INSERT INTO folders (name, position, created_at) VALUES (?,?,?)",
+        (name, mx + 1.0, now))
+    return jsonify(folder_dict(
+        db.query_one("SELECT * FROM folders WHERE id=?", (new_id,)), 0)), 201
+
+
+@notes_bp.route("/api/folders/<int:fid>", methods=["PATCH"])
+def api_folder_update(fid):
+    data = request.get_json(force=True, silent=True) or {}
+    if not db.query_one("SELECT id FROM folders WHERE id=?", (fid,)):
+        abort(404)
+    fields, params = [], []
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            abort(400, "name cannot be empty")
+        fields.append("name=?")
+        params.append(name)
+    if "position" in data:
+        # Guard the coercion so a non-numeric/null position is a clean 400, not a
+        # 500 (mirrors the count-parse guard in app.py's quiz endpoint).
+        try:
+            pos = float(data["position"])
+        except (TypeError, ValueError):
+            abort(400, "position must be a number")
+        fields.append("position=?")
+        params.append(pos)
+    if not fields:
+        abort(400, "nothing to update")
+    params.append(fid)
+    db.write(f"UPDATE folders SET {', '.join(fields)} WHERE id=?", params)
+    return jsonify(folder_dict(db.query_one("SELECT * FROM folders WHERE id=?", (fid,))))
+
+
+@notes_bp.route("/api/folders/<int:fid>", methods=["DELETE"])
+def api_folder_delete(fid):
+    if not db.query_one("SELECT id FROM folders WHERE id=?", (fid,)):
+        abort(404)
+    # Un-file this folder's notes (folder_id -> NULL) BEFORE deleting the folder,
+    # so notes survive as 未分類 rather than pointing at a phantom folder (we don't
+    # rely on FK cascade — the foreign_keys pragma may be off).
+    db.write_many([
+        ("UPDATE docs SET folder_id=NULL WHERE folder_id=?", (fid,)),
+        ("DELETE FROM folders WHERE id=?", (fid,)),
+    ])
     return jsonify({"ok": True})
 
 

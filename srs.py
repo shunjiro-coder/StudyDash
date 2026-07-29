@@ -107,6 +107,10 @@ def _card_out(r, exam_courses):
         "topic": r["topic"], "origin": r["origin"], "confidence": r["confidence"],
         "source_quote": r["source_quote"], "course_name": r["course_name"],
         "subject_type": r["subject_type"], "state": r["state"],
+        # H0: modality — the review screen branches on card_type + media_json.
+        "card_type": r["card_type"],
+        "media_json": (json.loads(r["media_json"])
+                       if ("media_json" in keys and r["media_json"]) else None),
         # E5: let the review screen jump back to WHERE this card came from.
         "material_id": r["material_id"],
         "source_loc": (json.loads(r["source_loc"])

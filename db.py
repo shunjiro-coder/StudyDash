@@ -458,9 +458,86 @@ def _migrate_e_source_loc(conn):
     _ensure_column(conn, "cards", "source_loc", "TEXT")
 
 
+_G2_METHODS_DDL = """
+CREATE TABLE IF NOT EXISTS study_methods (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    base        TEXT NOT NULL DEFAULT 'qa',  -- built-in this preset derives from
+    instruction TEXT,                        -- free-text override for the AI recast
+    created_at  TEXT NOT NULL
+);
+"""
+
+
+def _migrate_g2_methods(conn):
+    # Phase G2: user-saved custom study methods (preset + free-text instruction).
+    # Built-in card-format methods live in code (methods.py); this table holds
+    # only the custom presets a user creates.
+    conn.executescript(_G2_METHODS_DDL)
+
+
+def _migrate_h0_media(conn):
+    # Phase H0: per-modality render structure (ordered steps, list items, cloze
+    # info, self-grading rubric, MC choices, occlusion regions) as a nullable JSON
+    # blob. Deliberately EXCLUDED from the D-5 content_hash — front/back stay the
+    # card's identity — so richer modalities never disturb dedup/regenerate.
+    _ensure_column(conn, "cards", "media_json", "TEXT")
+
+
+# Phase I: material study modes (quiz / summary) + note folders. All additive.
+_I_QUIZZES_DDL = """
+CREATE TABLE IF NOT EXISTS quizzes (
+    id             INTEGER PRIMARY KEY,
+    material_id    INTEGER REFERENCES materials(id) ON DELETE CASCADE,
+    course_id      INTEGER REFERENCES courses(id) ON DELETE SET NULL,
+    format         TEXT NOT NULL DEFAULT 'written',   -- written|mixed
+    scope_desc     TEXT,                               -- optional range note
+    questions_json TEXT NOT NULL,                      -- [{type,question,answer,choices?}]
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quizzes_material ON quizzes(material_id);
+"""
+
+
+def _migrate_i_quizzes(conn):
+    # Phase I: material-level comprehension quizzes (a one-shot test to grasp a
+    # material's whole range — deliberately SEPARATE from the SRS review queue).
+    # One row per generated quiz; questions_json holds the entire question set.
+    conn.executescript(_I_QUIZZES_DDL)
+
+
+def _migrate_i_summary_material(conn):
+    # Phase I: let a study_guide (要点まとめ) attach to a specific material, not only
+    # a course — the "まとめ" study mode summarizes one uploaded material.
+    _ensure_column(conn, "study_guides", "material_id", "INTEGER")
+
+
+_I_FOLDERS_DDL = """
+CREATE TABLE IF NOT EXISTS folders (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    position   REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _migrate_i_folders(conn):
+    # Phase I: user-named folders to organize notes (docs) freely. docs.folder_id
+    # is nullable (NULL = 未分類). A folder delete nulls its docs' folder_id in code
+    # (no FK-cascade reliance, since the foreign_keys pragma may be off).
+    conn.executescript(_I_FOLDERS_DDL)
+    _ensure_column(conn, "docs", "folder_id", "INTEGER")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
+    ("g2_study_methods", "G", _migrate_g2_methods),
+    ("h0_media", "H", _migrate_h0_media),
+    ("i_quizzes", "I", _migrate_i_quizzes),
+    ("i_summary_material", "I", _migrate_i_summary_material),
+    ("i_folders", "I", _migrate_i_folders),
 ]
 
 

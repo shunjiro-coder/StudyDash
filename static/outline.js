@@ -70,6 +70,9 @@ async function renderDocList() {
   SD.setCrumbs([]);
   const head = el("div", "notes-head");
   head.appendChild(el("div", "focus-title", "ノート"));
+  const acts = el("div", "notes-head-acts");
+  const addFolder = el("button", "btn ghost small", "＋ フォルダ");
+  addFolder.onclick = createFolderFlow;
   const add = el("button", "btn primary small", "＋ 新規ノート");
   add.onclick = async () => {
     try {
@@ -77,37 +80,111 @@ async function renderDocList() {
       openDoc(d.id);
     } catch (e) { toast("作成に失敗"); }
   };
-  head.appendChild(add);
+  acts.appendChild(addFolder); acts.appendChild(add);
+  head.appendChild(acts);
   host.appendChild(head);
 
-  let docs = [];
-  try { docs = await api("/api/docs"); } catch (e) { host.appendChild(el("div", "empty", "読み込みに失敗しました")); return; }
-  if (!docs.length) { host.appendChild(el("div", "empty", "まだノートはありません。「今日のノート」から始めましょう。")); return; }
+  // Phase I: group notes by folder (independent user-named containers; NULL =
+  // 未分類). Load both, then render one group per folder + a 未分類 group.
+  let docs = [], folders = [];
+  try { [docs, folders] = await Promise.all([api("/api/docs"), api("/api/folders")]); }
+  catch (e) { host.appendChild(el("div", "empty", "読み込みに失敗しました")); return; }
+  if (!docs.length && !folders.length) {
+    host.appendChild(el("div", "empty", "まだノートはありません。「今日のノート」から始めましょう。"));
+    return;
+  }
 
-  const list = el("div", "doc-list");
+  const known = new Set(folders.map((f) => f.id));
+  const byFolder = new Map();   // key: String(folder_id) | "null"
   docs.forEach((d) => {
-    const it = el("div", "doc-item");
-    it.dataset.id = d.id;
-    const left = el("div", "doc-main");
-    const titleEl = el("div", "title", docLabel(d));
-    left.appendChild(titleEl);
-    left.appendChild(el("div", "meta", relTime(d.updated_at)));
-    it.appendChild(left);
-
-    const actions = el("div", "doc-actions");
-    const renameBtn = el("button", "doc-act", "✎");
-    renameBtn.type = "button"; renameBtn.title = "名前を変更"; renameBtn.setAttribute("aria-label", "名前を変更");
-    renameBtn.onclick = (e) => { e.stopPropagation(); startRenameDoc(d, it, titleEl); };
-    const delBtn = el("button", "doc-act danger", "🗑");
-    delBtn.type = "button"; delBtn.title = "削除"; delBtn.setAttribute("aria-label", "削除");
-    delBtn.onclick = (e) => { e.stopPropagation(); deleteDocItem(d); };
-    actions.appendChild(renameBtn); actions.appendChild(delBtn);
-    it.appendChild(actions);
-
-    it.onclick = () => openDoc(d.id);
-    list.appendChild(it);
+    // A note whose folder_id doesn't match a live folder (e.g. the folder was
+    // deleted in another tab mid-assign) falls back to 未分類 so it can never
+    // vanish from the list into a phantom group.
+    const k = (d.folder_id != null && known.has(d.folder_id)) ? String(d.folder_id) : "null";
+    (byFolder.get(k) || byFolder.set(k, []).get(k)).push(d);
   });
-  host.appendChild(list);
+  const groups = el("div", "doc-groups");
+  folders.forEach((f) => groups.appendChild(renderFolderGroup(f, byFolder.get(String(f.id)) || [], folders)));
+  groups.appendChild(renderFolderGroup(null, byFolder.get("null") || [], folders));
+  host.appendChild(groups);
+}
+
+function renderFolderGroup(folder, docs, allFolders) {
+  const g = el("div", "doc-group");
+  const gh = el("div", "doc-group-h");
+  const nameEl = el("div", "dg-name", folder ? "📁 " + folder.name : "🗂 未分類");
+  gh.appendChild(nameEl);
+  gh.appendChild(el("div", "dg-count", String(docs.length)));
+  if (folder) {
+    const a = el("div", "dg-acts");
+    const ren = el("button", "doc-act", "✎"); ren.type = "button"; ren.title = "フォルダ名を変更";
+    ren.setAttribute("aria-label", "フォルダ名を変更");
+    ren.onclick = () => renameFolderFlow(folder);
+    const del = el("button", "doc-act danger", "🗑"); del.type = "button"; del.title = "フォルダを削除";
+    del.setAttribute("aria-label", "フォルダを削除");
+    del.onclick = () => deleteFolderFlow(folder);
+    a.appendChild(ren); a.appendChild(del); gh.appendChild(a);
+  }
+  g.appendChild(gh);
+  if (!docs.length) { g.appendChild(el("div", "dg-empty", "（ノートなし）")); return g; }
+  const list = el("div", "doc-list");
+  docs.forEach((d) => list.appendChild(renderDocItem(d, allFolders)));
+  g.appendChild(list);
+  return g;
+}
+
+function renderDocItem(d, allFolders) {
+  const it = el("div", "doc-item"); it.dataset.id = d.id;
+  const left = el("div", "doc-main");
+  const titleEl = el("div", "title", docLabel(d));
+  left.appendChild(titleEl);
+  left.appendChild(el("div", "meta", relTime(d.updated_at)));
+  it.appendChild(left);
+
+  const actions = el("div", "doc-actions");
+  // per-note folder picker: move a note between folders (or to 未分類).
+  const sel = el("select", "doc-folder-sel"); sel.title = "フォルダを変更";
+  const none = el("option", "", "未分類"); none.value = ""; sel.appendChild(none);
+  (allFolders || []).forEach((f) => { const o = el("option", "", f.name); o.value = String(f.id); sel.appendChild(o); });
+  sel.value = d.folder_id == null ? "" : String(d.folder_id);
+  sel.onclick = (e) => e.stopPropagation();
+  sel.onchange = async (e) => {
+    e.stopPropagation();
+    const v = sel.value === "" ? null : Number(sel.value);
+    try { await api("/api/docs/" + d.id, { method: "PATCH", body: JSON.stringify({ folder_id: v }) }); toast("移動しました"); renderDocList(); }
+    catch (err) { toast("移動に失敗"); }
+  };
+  actions.appendChild(sel);
+  const renameBtn = el("button", "doc-act", "✎");
+  renameBtn.type = "button"; renameBtn.title = "名前を変更"; renameBtn.setAttribute("aria-label", "名前を変更");
+  renameBtn.onclick = (e) => { e.stopPropagation(); startRenameDoc(d, it, titleEl); };
+  const delBtn = el("button", "doc-act danger", "🗑");
+  delBtn.type = "button"; delBtn.title = "削除"; delBtn.setAttribute("aria-label", "削除");
+  delBtn.onclick = (e) => { e.stopPropagation(); deleteDocItem(d); };
+  actions.appendChild(renameBtn); actions.appendChild(delBtn);
+  it.appendChild(actions);
+  it.onclick = () => openDoc(d.id);
+  return it;
+}
+
+async function createFolderFlow() {
+  const name = (prompt("新しいフォルダ名") || "").trim();
+  if (!name) return;
+  try { await api("/api/folders", { method: "POST", body: JSON.stringify({ name }) }); toast("フォルダを作成しました", true); renderDocList(); }
+  catch (e) { toast("作成に失敗: " + e.message); }
+}
+
+async function renameFolderFlow(folder) {
+  const name = (prompt("フォルダ名を変更", folder.name) || "").trim();
+  if (!name || name === folder.name) return;
+  try { await api("/api/folders/" + folder.id, { method: "PATCH", body: JSON.stringify({ name }) }); renderDocList(); }
+  catch (e) { toast("変更に失敗"); }
+}
+
+async function deleteFolderFlow(folder) {
+  if (!confirm("フォルダ「" + folder.name + "」を削除しますか？中のノートは未分類に戻ります（ノート自体は消えません）。")) return;
+  try { await api("/api/folders/" + folder.id, { method: "DELETE" }); toast("削除しました"); renderDocList(); }
+  catch (e) { toast("削除に失敗"); }
 }
 
 // inline rename inside the docs list: swap the title for an input, commit on

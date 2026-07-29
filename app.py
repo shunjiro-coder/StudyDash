@@ -372,7 +372,20 @@ def card_dict(r):
         "source_quote": r["source_quote"], "verified": r["verified"],
         "source_loc": (json.loads(r["source_loc"])
                        if ("source_loc" in r.keys() and r["source_loc"]) else None),
+        # H0: per-modality render structure (excluded from D-5 content_hash)
+        "media_json": (json.loads(r["media_json"])
+                       if ("media_json" in r.keys() and r["media_json"]) else None),
         "state": r["state"], "next_due_at": r["next_due_at"],
+    }
+
+
+def quiz_dict(r):
+    # Phase I: a material comprehension quiz. questions_json = the whole set.
+    return {
+        "id": r["id"], "material_id": r["material_id"], "course_id": r["course_id"],
+        "format": r["format"], "scope_desc": r["scope_desc"],
+        "questions": json.loads(r["questions_json"]) if r["questions_json"] else [],
+        "created_at": r["created_at"],
     }
 
 
@@ -385,11 +398,24 @@ def api_material_detail(mid):
     d["extracted_text"] = m["extracted_text"]
     cards = db.query("SELECT * FROM cards WHERE material_id=? ORDER BY origin, id", (mid,))
     d["cards"] = [card_dict(c) for c in cards]
+    # Course-level 要点まとめ only. Phase I material summaries carry BOTH course_id
+    # (for ON DELETE CASCADE cleanup) and material_id, so `material_id IS NULL`
+    # keeps them out of this course list — they surface via summary_guide instead
+    # (else a material's summary would leak onto sibling materials and duplicate).
     guides = db.query(
-        "SELECT * FROM study_guides WHERE course_id=? ORDER BY id DESC LIMIT 3",
+        "SELECT * FROM study_guides WHERE course_id=? AND material_id IS NULL "
+        "ORDER BY id DESC LIMIT 3",
         (m["course_id"],)) if m["course_id"] else []
     d["guides"] = [{"id": g["id"], "scope_desc": g["scope_desc"],
                     "content_md": g["content_md"]} for g in guides]
+    # Phase I study modes: latest material-scoped まとめ + latest quiz (if any).
+    sg = db.query_one(
+        "SELECT * FROM study_guides WHERE material_id=? ORDER BY id DESC LIMIT 1", (mid,))
+    d["summary_guide"] = ({"id": sg["id"], "scope_desc": sg["scope_desc"],
+                           "content_md": sg["content_md"]} if sg else None)
+    qz = db.query_one(
+        "SELECT * FROM quizzes WHERE material_id=? ORDER BY id DESC LIMIT 1", (mid,))
+    d["quiz"] = quiz_dict(qz) if qz else None
     return jsonify(d)
 
 
@@ -448,6 +474,107 @@ def api_material_approve(mid):
     if stmts:
         db.write_many(stmts)
     return jsonify({"ok": True, "approved": len(approve), "dropped": len(drop)})
+
+
+# --------------------------------------------------------------------------
+# Study methods (Phase G2) — the "学び方" catalog + AI recast of a card into one
+# --------------------------------------------------------------------------
+@app.route("/api/methods")
+def api_methods():
+    import methods
+    return jsonify(methods.all_methods())
+
+
+@app.route("/api/methods", methods=["POST"])
+def api_methods_create():
+    import methods
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        abort(400, "name required")
+    base = (data.get("base") or "qa").strip()
+    instruction = (data.get("instruction") or "").strip() or None
+    mid = db.write(
+        "INSERT INTO study_methods (name, base, instruction, created_at) "
+        "VALUES (?,?,?,?)", (name, base, instruction, db.now_utc_iso()))
+    return jsonify(methods.custom_dict(
+        db.query_one("SELECT * FROM study_methods WHERE id=?", (mid,)))), 201
+
+
+@app.route("/api/methods/<int:cid>", methods=["DELETE"])
+def api_methods_delete(cid):
+    db.write("DELETE FROM study_methods WHERE id=?", (cid,))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cards/<int:cid>/recast", methods=["POST"])
+def api_card_recast(cid):
+    """Recast a card into the chosen method (one AI call). Synchronous: this is a
+    user-initiated, single-card transform, so we block briefly and return the new
+    card rather than routing through the background worker."""
+    import methods
+    data = request.get_json(silent=True) or {}
+    method = methods.get_method((data.get("method") or "").strip())
+    if not method:
+        abort(400, "unknown method")
+    if not db.query_one("SELECT id FROM cards WHERE id=?", (cid,)):
+        abort(404)
+    try:
+        new = generate.recast_card(cid, method)
+    except generate.ai.ClaudeError as e:
+        return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "message": f"変換に失敗: {str(e)[:200]}"}), 200
+    return jsonify({"ok": True, "card": card_dict(new)})
+
+
+# --------------------------------------------------------------------------
+# Phase I — material study modes: quiz + summary (in addition to flashcards).
+# Both are synchronous single AI calls (like recast); AI/parse failures return
+# ok:false with a message (HTTP 200) so the UI can show it inline.
+# --------------------------------------------------------------------------
+@app.route("/api/materials/<int:mid>/quiz", methods=["GET", "POST"])
+def api_material_quiz(mid):
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    if request.method == "GET":
+        qz = db.query_one(
+            "SELECT * FROM quizzes WHERE material_id=? ORDER BY id DESC LIMIT 1", (mid,))
+        return jsonify({"quiz": quiz_dict(qz) if qz else None})
+    data = request.get_json(silent=True) or {}
+    fmt = "mixed" if data.get("format") == "mixed" else "written"
+    try:
+        count = int(data["count"]) if data.get("count") is not None else None
+    except (TypeError, ValueError):
+        count = None
+    scope = (data.get("scope") or "").strip() or None
+    try:
+        qz = generate.generate_quiz(mid, fmt, count, scope)
+    except generate.ai.ClaudeError as e:
+        return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "message": f"生成に失敗: {str(e)[:200]}"}), 200
+    if not qz:
+        abort(404)
+    return jsonify({"ok": True, "quiz": quiz_dict(qz)})
+
+
+@app.route("/api/materials/<int:mid>/summary", methods=["POST"])
+def api_material_summary(mid):
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    scope = (data.get("scope") or "").strip() or None
+    try:
+        g = generate.generate_summary(mid, scope)
+    except generate.ai.ClaudeError as e:
+        return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "message": f"生成に失敗: {str(e)[:200]}"}), 200
+    if not g:
+        abort(404)
+    return jsonify({"ok": True, "summary": {
+        "id": g["id"], "scope_desc": g["scope_desc"], "content_md": g["content_md"]}})
 
 
 @app.route("/api/materials/<int:mid>/retry", methods=["POST"])

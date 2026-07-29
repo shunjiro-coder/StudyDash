@@ -396,9 +396,31 @@ async function renderReviewHome(p) {
   }
 }
 
+// H2 — modality-aware review. Cards are still front/back + self-graded (SM-2
+// contract untouched); card_type + media_json only change the interaction so
+// non-memory subjects are actually studyable. Unknown/legacy types → default.
+const PRODUCE_TYPES = new Set(["produce", "explain", "interpret", "predict", "compare", "elaborate"]);
+const STEP_TYPES = new Set(["steps", "worked"]);
+const CLOZE_RE = /_{2,}|\{\{[^}]*\}\}|｛｛[^｝]*｝｝/;
+function _lines(s) { return (s || "").split("\n").map((x) => x.trim()).filter(Boolean); }
+function clozeText(card, filled) {
+  // Replacer FUNCTION (not a string) so a "$" in the answer isn't read as a
+  // regex $-special. Keep /g: every blank must render the same way, else a 2nd
+  // {{marker}} would leak its answer literally in the unfilled state.
+  const fill = filled ? "【" + (card.back || "？") + "】" : "____";
+  return (card.front || "").replace(new RegExp(CLOZE_RE.source, "g"), () => fill);
+}
+function revealLabel(ct) {
+  if (PRODUCE_TYPES.has(ct) || ct === "compute") return "答え合わせ";
+  if (STEP_TYPES.has(ct)) return "手順を見る";
+  return "答えを見る";
+}
 function renderCard(p) {
   const r = S.review;
   const card = r.queue[r.idx];
+  const ct = card.card_type || "qa";
+  const mj = card.media_json || {};
+  const isCloze = ct === "cloze" && CLOZE_RE.test(card.front || "");
   const wrap = el("div", "review-wrap");
 
   const top = el("div", "review-top");
@@ -408,13 +430,43 @@ function renderCard(p) {
   wrap.appendChild(top);
 
   const face = el("div", "review-card");
-  face.appendChild(el("div", "review-front", card.front));
-  if (r.revealed) {
+  face.appendChild(el("div", "review-front", isCloze ? clozeText(card, r.revealed) : card.front));
+
+  if (!r.revealed) {
+    if (PRODUCE_TYPES.has(ct)) {
+      const ta = el("textarea", "rc-input"); ta.placeholder = "自分の言葉で答えを書いてみよう（採点は自分で）";
+      ta.value = r.draft || ""; ta.oninput = () => { r.draft = ta.value; }; ta.onclick = (e) => e.stopPropagation();
+      face.appendChild(ta);
+      face.appendChild(el("div", "review-hint", "書けたら「答え合わせ」で模範解答と照合"));
+    } else if (ct === "compute") {
+      const inp = el("input", "rc-input"); inp.placeholder = "自分で計算して答えを入力";
+      inp.value = r.draft || ""; inp.oninput = () => { r.draft = inp.value; }; inp.onclick = (e) => e.stopPropagation();
+      face.appendChild(inp);
+      face.appendChild(el("div", "review-hint", "解けたら「答え合わせ」"));
+    } else if (STEP_TYPES.has(ct)) {
+      face.appendChild(el("div", "review-hint", "手順を思い出してからタップ"));
+    } else if (isCloze) {
+      face.appendChild(el("div", "review-hint", "空所に入る語を考えてタップ"));
+    } else {
+      face.appendChild(el("div", "review-hint", "タップして答えを見る"));
+    }
+  } else {
     face.appendChild(el("hr", "review-sep"));
-    face.appendChild(el("div", "review-back", card.back));
+    if ((PRODUCE_TYPES.has(ct) || ct === "compute") && r.draft) {
+      const y = el("div", "rc-yourans"); y.appendChild(el("div", "rc-yourans-t", "あなたの答え")); y.appendChild(el("div", "", r.draft)); face.appendChild(y);
+    }
+    if (STEP_TYPES.has(ct)) {
+      const steps = (Array.isArray(mj.steps) && mj.steps.length) ? mj.steps : _lines(card.back);
+      const ol = el("ol", "rc-steps"); steps.forEach((s) => ol.appendChild(el("li", "", s))); face.appendChild(ol);
+    } else if (ct === "list") {
+      const items = (Array.isArray(mj.items) && mj.items.length) ? mj.items : _lines(card.back);
+      const box = el("div", "rc-list"); items.forEach((s) => { const lab = el("label", "rc-check"); const cb = el("input"); cb.type = "checkbox"; lab.appendChild(cb); lab.appendChild(el("span", "", s)); box.appendChild(lab); }); face.appendChild(box);
+    } else if (!isCloze) {
+      face.appendChild(el("div", "review-back", card.back));
+    }
+    if (mj.rubric) { const rb = el("div", "rc-rubric"); rb.appendChild(el("div", "rc-rubric-t", "自己採点の観点")); rb.appendChild(el("div", "", mj.rubric)); face.appendChild(rb); }
     if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; img.alt = ""; img.onerror = () => img.remove(); face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
-    // E5: jump to WHERE this card came from (opens the material at the quote).
     if (card.material_id && (card.source_loc || card.source_quote)) {
       const src = el("button", "btn small ghost", "📍 出典を見る");
       src.onclick = (e) => { e.stopPropagation(); openMaterial(card.material_id, card.source_loc || card.source_quote); };
@@ -423,8 +475,6 @@ function renderCard(p) {
     const bad = el("button", "btn small ghost", "この問題おかしい");
     bad.onclick = async (e) => { e.stopPropagation(); await api("/api/review/report", { method: "POST", body: JSON.stringify({ card_id: card.id, verdict: "wrong" }) }); toast("報告しました"); };
     face.appendChild(bad);
-  } else {
-    face.appendChild(el("div", "review-hint", "タップして答えを見る"));
   }
   // tap to reveal + swipe (left=again / right=easy)
   face.onclick = () => { if (!r.revealed) { r.revealed = true; renderReview(); } };
@@ -439,7 +489,7 @@ function renderCard(p) {
       bar.appendChild(b);
     });
   } else {
-    const b = el("button", "btn primary reveal-btn", "答えを見る");
+    const b = el("button", "btn primary reveal-btn", revealLabel(ct));
     b.onclick = () => { r.revealed = true; renderReview(); };
     bar.appendChild(b);
   }
@@ -464,7 +514,7 @@ async function grade(g) {
   const card = r.queue[r.idx];
   try { await api("/api/review/answer", { method: "POST", body: JSON.stringify({ card_id: card.id, grade: g }) }); }
   catch (e) { toast("記録に失敗"); return; }
-  r.idx++; r.revealed = false;
+  r.idx++; r.revealed = false; r.draft = "";
   await refreshMeta();
   renderReview();
 }
@@ -769,6 +819,12 @@ async function openMaterial(mid, highlight) {
     return node;
   };
 
+  // Phase I — study modes: pick HOW to study this material (flashcards below,
+  // quiz + summary here). Needs transcription text and a settled material.
+  if ((m.extracted_text || "").trim() && m.status !== "failed" && !inFlight(m.status)) {
+    box.appendChild(studyModesSection(m, ov));
+  }
+
   // G1: proposal / confirmation gate — proposed cards await approval (nothing
   // enters the review queue until confirmed). Recommended = one click; 項目を選ぶ
   // = per-item checklist, each with its E5 source-highlight.
@@ -805,7 +861,9 @@ async function openMaterial(mid, highlight) {
         loc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); highlightQuote(c.source_loc || c.source_quote); };
         bd.appendChild(loc);
       }
-      row.appendChild(bd); pick.appendChild(row);
+      row.appendChild(bd);
+      bd.appendChild(recastRow(c, () => { ov.remove(); openMaterial(m.id); }));
+      pick.appendChild(row);
     });
     const pickRow = el("div", "proposal-actions");
     const pb = el("button", "btn small primary", "選んだ項目で学ぶ");
@@ -823,10 +881,15 @@ async function openMaterial(mid, highlight) {
   const settled = cards.filter((c) => c.state !== "proposed");
   const lowConf = settled.filter((c) => c.confidence === "low");
   const normal = settled.filter((c) => c.confidence !== "low");
+  const withCtl = (c, low) => {
+    const n = addLoc(cardPreview(c, low), c);
+    n.appendChild(recastRow(c, () => { ov.remove(); openMaterial(m.id); }));
+    return n;
+  };
   if (lowConf.length) box.appendChild(el("div", "section-title", `要確認 ${lowConf.length}件`));
-  lowConf.forEach((c) => box.appendChild(addLoc(cardPreview(c, true), c)));
+  lowConf.forEach((c) => box.appendChild(withCtl(c, true)));
   if (normal.length) box.appendChild(el("div", "section-title", `カード ${normal.length}枚`));
-  normal.forEach((c) => box.appendChild(addLoc(cardPreview(c, false), c)));
+  normal.forEach((c) => box.appendChild(withCtl(c, false)));
 
   if (m.guides && m.guides.length) {
     box.appendChild(el("div", "section-title", "要点まとめ"));
@@ -874,6 +937,333 @@ async function openMaterial(mid, highlight) {
   document.body.appendChild(ov);
   if (highlight) highlightQuote(highlight);   // E5: opened from "出典を見る"
 }
+
+// -------------------------------------------------------------------------
+// Phase I — study modes (quiz + summary). Flashcards stay the existing proposal
+// / card flow; these two add a comprehension test and a 要点まとめ over the same
+// material. Generated content follows the MATERIAL's language (handled server-side
+// in the prompts); the UI chrome stays Japanese.
+// -------------------------------------------------------------------------
+function smChip(icon, label, sub) {
+  const b = el("button", "sm-chip"); b.type = "button";
+  b.appendChild(el("span", "sm-ico", icon));
+  const t = el("span", "sm-txt");
+  t.appendChild(el("span", "sm-lb", label));
+  t.appendChild(el("span", "sm-sb", sub));
+  b.appendChild(t);
+  return b;
+}
+
+function studyModesSection(m, ov) {
+  const sec = el("div", "study-modes");
+  sec.appendChild(el("div", "sm-title", "学習モード"));
+  sec.appendChild(el("div", "sm-sub", "この教材をどう学ぶか選べます。フラッシュカードは下のカード一覧、クイズとまとめはここから。"));
+  const chips = el("div", "sm-chips");
+  const flashN = (m.cards || []).length;
+  const cFlash = smChip("📇", "フラッシュカード", flashN ? `${flashN}枚` : "下の一覧へ");
+  cFlash.onclick = () => {
+    const t = ov.querySelector(".proposal") || ov.querySelector(".section-title") || ov.querySelector(".mat-addcard");
+    if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const cQuiz = smChip("📝", "クイズ", m.quiz ? `${(m.quiz.questions || []).length}問 作成済み` : "テスト形式で理解確認");
+  const cSum = smChip("📄", "まとめ", m.summary_guide ? "作成済み" : "要点を整理");
+  const body = el("div", "sm-body");
+  cQuiz.onclick = () => { setActiveChip(chips, cQuiz); openQuizPanel(m, ov, body); };
+  cSum.onclick = () => { setActiveChip(chips, cSum); openSummaryPanel(m, ov, body); };
+  chips.appendChild(cFlash); chips.appendChild(cQuiz); chips.appendChild(cSum);
+  sec.appendChild(chips); sec.appendChild(body);
+  return sec;
+}
+function setActiveChip(chips, chip) {
+  chips.querySelectorAll(".sm-chip").forEach((c) => c.classList.remove("active"));
+  chip.classList.add("active");
+}
+
+// ---- Quiz setup panel (inside the material modal) ----
+function openQuizPanel(m, ov, host) {
+  host.innerHTML = "";
+  const panel = el("div", "sm-panel");
+  panel.appendChild(el("div", "sm-panel-h", "📝 クイズ（テスト形式）"));
+  panel.appendChild(el("div", "sm-panel-sub", "教材の範囲を通しで確認するテストです。途中で答えは出さず、最後にまとめて答え合わせ・自己採点します。"));
+
+  if (m.quiz && (m.quiz.questions || []).length) {
+    const q = m.quiz;
+    const has = el("div", "sm-existing");
+    has.appendChild(el("span", "", `前回のクイズ：${q.questions.length}問・${q.format === "mixed" ? "AIおまかせ（記述＋選択）" : "記述式"}`));
+    const take = el("button", "btn small primary", "テストを受ける");
+    take.onclick = () => openQuizRunner(q, m);
+    has.appendChild(take);
+    panel.appendChild(has);
+  }
+
+  const form = el("div", "sm-form");
+  form.appendChild(el("div", "sm-flabel", "出題形式"));
+  const fmtWrap = el("div", "sm-radio");
+  const fmt = radioGroup("quizfmt", [
+    { v: "written", label: "記述式（最後に自己採点）", checked: true },
+    { v: "mixed", label: "AIおまかせ（記述＋4択の混合）" },
+  ]);
+  fmtWrap.appendChild(fmt.node); form.appendChild(fmtWrap);
+
+  form.appendChild(el("div", "sm-flabel", "範囲（任意）"));
+  const scope = el("input", "sm-in");
+  scope.placeholder = "例：第3章／pp.10-14／光合成の部分 だけ など";
+  form.appendChild(scope);
+
+  const actions = el("div", "sm-actions");
+  const gen = el("button", "btn small primary", m.quiz ? "作り直す" : "クイズを作る");
+  const note = el("div", "sm-gennote hidden", "生成中…（20〜60秒ほどかかることがあります）");
+  gen.onclick = () => runQuizGen(m, ov, host, { format: fmt.value(), scope: scope.value.trim() || null }, gen, note);
+  actions.appendChild(gen);
+  if (m.quiz) {
+    const more = el("button", "btn small ghost", "＋10問で作り直す");
+    more.onclick = () => runQuizGen(m, ov, host,
+      { format: m.quiz.format, scope: m.quiz.scope_desc || null, count: (m.quiz.questions || []).length + 10 }, more, note);
+    actions.appendChild(more);
+  }
+  form.appendChild(actions); form.appendChild(note);
+  panel.appendChild(form);
+  host.appendChild(panel);
+}
+
+async function runQuizGen(m, ov, host, body, btn, note) {
+  btn.disabled = true; if (note) note.classList.remove("hidden");
+  try {
+    const r = await api(`/api/materials/${m.id}/quiz`, { method: "POST", body: JSON.stringify(body) });
+    if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
+    m.quiz = r.quiz;
+    toast(`${r.quiz.questions.length}問のクイズを作りました`, true);
+    openQuizPanel(m, ov, host);
+    openQuizRunner(r.quiz, m);
+  } catch (e) {
+    toast("生成に失敗: " + e.message);
+  } finally {
+    btn.disabled = false; if (note) note.classList.add("hidden");
+  }
+}
+
+// ---- Quiz runner (own overlay): answer all, then self/auto-grade ----
+function openQuizRunner(quiz, m) {
+  const questions = quiz.questions || [];
+  if (!questions.length) { toast("問題がありません"); return; }
+  const state = questions.map(() => ({ answer: "" }));   // per-question response
+
+  const ov = el("div", "modal-overlay");
+  const box = el("div", "modal quiz-modal");
+  const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
+  box.appendChild(close);
+  box.appendChild(el("h3", "", "📝 クイズ"));
+  box.appendChild(el("div", "quiz-meta", `${questions.length}問・${quiz.format === "mixed" ? "記述＋選択" : "記述式"}${quiz.scope_desc ? "・範囲: " + quiz.scope_desc : ""}`));
+  box.appendChild(el("div", "quiz-hint", "全問に答えてから「答え合わせ」を押してください（途中で答えは出ません）。"));
+
+  const list = el("div", "quiz-list");
+  questions.forEach((q, i) => {
+    const item = el("div", "quiz-q"); item.dataset.i = i;
+    item.appendChild(el("div", "quiz-qh", `問 ${i + 1}`));
+    item.appendChild(el("div", "quiz-qt", q.question));
+    if (q.type === "choice" && q.choices) {
+      const opts = el("div", "quiz-choices");
+      q.choices.forEach((choice) => {
+        const lb = el("label", "quiz-choice");
+        const rb = el("input", ""); rb.type = "radio"; rb.name = "qz" + i; rb.value = choice;
+        rb.onchange = () => { state[i].answer = choice; };
+        lb.appendChild(rb); lb.appendChild(el("span", "", choice));
+        opts.appendChild(lb);
+      });
+      item.appendChild(opts);
+    } else {
+      const ta = el("textarea", "quiz-input"); ta.rows = 2; ta.placeholder = "答えを入力";
+      ta.oninput = () => { state[i].answer = ta.value; };
+      item.appendChild(ta);
+    }
+    list.appendChild(item);
+  });
+  box.appendChild(list);
+
+  const foot = el("div", "quiz-foot");
+  const submit = el("button", "btn primary", "答え合わせ");
+  submit.onclick = () => gradeQuiz(quiz, state, box, m);
+  foot.appendChild(submit);
+  box.appendChild(foot);
+
+  ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  document.body.appendChild(ov);
+  box.scrollTop = 0;
+}
+
+function gradeQuiz(quiz, state, box, m) {
+  const questions = quiz.questions || [];
+  const norm = (s) => (s || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const results = [];        // {i, correct: true|false|null}  (null = written, self-graded)
+  questions.forEach((q, i) => {
+    const item = box.querySelector(`.quiz-q[data-i="${i}"]`);
+    if (!item) return;
+    item.querySelectorAll(".quiz-input,.quiz-choices").forEach((n) => n.classList.add("locked"));
+    item.querySelectorAll(".quiz-input").forEach((n) => { n.readOnly = true; });
+    item.querySelectorAll('input[type="radio"]').forEach((n) => { n.disabled = true; });
+
+    const rev = el("div", "quiz-reveal");
+    rev.appendChild(el("div", "quiz-your", "あなたの答え：" + (state[i].answer || "（未回答）")));
+    rev.appendChild(el("div", "quiz-ans", "模範解答：" + q.answer));
+
+    if (q.type === "choice") {
+      const ok = norm(state[i].answer) === norm(q.answer);
+      item.classList.add(ok ? "q-ok" : "q-ng");
+      rev.appendChild(el("div", "quiz-verdict " + (ok ? "ok" : "ng"), ok ? "✓ 正解" : "✗ 不正解"));
+      results.push({ i, correct: ok });
+    } else {
+      // written = self-graded: ○ / ×, default unset. rubric optional.
+      const rr = { i, correct: null };
+      results.push(rr);
+      const grp = el("div", "quiz-selfgrade");
+      grp.appendChild(el("span", "", "自己採点："));
+      const mk = (label, val, cls) => {
+        const b = el("button", "sg-btn " + cls, label); b.type = "button";
+        b.onclick = () => {
+          rr.correct = val;
+          grp.querySelectorAll(".sg-btn").forEach((x) => x.classList.remove("on"));
+          b.classList.add("on");
+          item.classList.remove("q-ok", "q-ng");
+          item.classList.add(val ? "q-ok" : "q-ng");
+          updateQuizScore(box, results);
+        };
+        return b;
+      };
+      grp.appendChild(mk("○ 正解", true, "ok"));
+      grp.appendChild(mk("× 不正解", false, "ng"));
+      rev.appendChild(grp);
+    }
+    item.appendChild(rev);
+  });
+
+  // Replace footer with score + wrong-to-card action.
+  const foot = box.querySelector(".quiz-foot"); if (foot) foot.innerHTML = "";
+  const score = el("div", "quiz-score"); score.dataset.role = "score";
+  foot.appendChild(score);
+  if (m && m.id) {
+    const toCards = el("button", "btn small ghost", "間違えた問題をカードに追加");
+    toCards.onclick = () => addWrongToCards(questions, results, m, toCards);
+    foot.appendChild(toCards);
+  }
+  updateQuizScore(box, results);
+  const first = box.querySelector(".quiz-reveal"); if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function updateQuizScore(box, results) {
+  // correct = auto-graded ✓ + self-graded ○; graded = anything with a verdict
+  // (auto items always; written items once the user taps ○/×). null = not yet.
+  const correct = results.filter((r) => r.correct === true).length;
+  const graded = results.filter((r) => r.correct !== null).length;
+  const total = results.length;
+  const score = box.querySelector('[data-role="score"]'); if (!score) return;
+  score.textContent = `スコア ${correct} / ${total}` + (graded < total ? `（未採点 ${total - graded}問）` : "");
+}
+
+async function addWrongToCards(questions, results, m, btn) {
+  const wrong = results.filter((r) => r.correct === false);
+  if (!wrong.length) { toast("追加する間違いがありません"); return; }
+  btn.disabled = true;
+  try {
+    for (const r of wrong) {
+      const q = questions[r.i];
+      await api(`/api/materials/${m.id}/card`, { method: "POST", body: JSON.stringify({ front: q.question, back: q.answer }) });
+    }
+    toast("間違えた問題を復習に追加しました（重複は自動で除外されます）", true);
+    btn.textContent = "追加しました";
+  } catch (e) {
+    toast("追加に失敗: " + e.message); btn.disabled = false;
+  }
+}
+
+// ---- Summary panel (要点まとめ) ----
+function openSummaryPanel(m, ov, host) {
+  host.innerHTML = "";
+  const panel = el("div", "sm-panel");
+  panel.appendChild(el("div", "sm-panel-h", "📄 まとめ（要点整理）"));
+  panel.appendChild(el("div", "sm-panel-sub", "教材の内容を、あとで見返せる要点にまとめます。"));
+
+  const view = el("div", "sm-summary-view");
+  const render = (guide) => {
+    view.innerHTML = "";
+    if (guide && guide.content_md) {
+      if (guide.scope_desc) view.appendChild(el("div", "sm-scope", "範囲: " + guide.scope_desc));
+      view.appendChild(mdToNode(guide.content_md));
+    }
+  };
+  render(m.summary_guide);
+  panel.appendChild(view);
+
+  const form = el("div", "sm-form");
+  form.appendChild(el("div", "sm-flabel", "範囲（任意）"));
+  const scope = el("input", "sm-in");
+  scope.placeholder = "例：第3章 だけ／全体 など";
+  if (m.summary_guide && m.summary_guide.scope_desc) scope.value = m.summary_guide.scope_desc;
+  form.appendChild(scope);
+  const actions = el("div", "sm-actions");
+  const gen = el("button", "btn small primary", m.summary_guide ? "作り直す" : "まとめを作る");
+  const note = el("div", "sm-gennote hidden", "生成中…（10〜40秒ほどかかることがあります）");
+  gen.onclick = async () => {
+    gen.disabled = true; note.classList.remove("hidden");
+    try {
+      const r = await api(`/api/materials/${m.id}/summary`, { method: "POST", body: JSON.stringify({ scope: scope.value.trim() || null }) });
+      if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
+      m.summary_guide = r.summary;
+      render(r.summary);
+      toast("まとめを作成しました", true);
+    } catch (e) { toast("生成に失敗: " + e.message); }
+    finally { gen.disabled = false; note.classList.add("hidden"); }
+  };
+  actions.appendChild(gen); form.appendChild(actions); form.appendChild(note);
+  panel.appendChild(form);
+  host.appendChild(panel);
+}
+
+// small radio-group helper
+function radioGroup(name, items) {
+  const node = el("div", "rg");
+  const inputs = [];
+  items.forEach((it) => {
+    const lb = el("label", "rg-item");
+    const rb = el("input", ""); rb.type = "radio"; rb.name = name; rb.value = it.v;
+    if (it.checked) rb.checked = true;
+    inputs.push(rb);
+    lb.appendChild(rb); lb.appendChild(el("span", "", it.label));
+    node.appendChild(lb);
+  });
+  return { node, value: () => (inputs.find((x) => x.checked) || {}).value || items[0].v };
+}
+
+// minimal, SAFE markdown -> DOM (textContent only; no innerHTML). Handles
+// ## headings, - bullets, **bold**, and paragraphs. Enough for AI まとめ output.
+function mdToNode(md) {
+  const wrap = el("div", "md");
+  let ul = null;
+  const flush = () => { if (ul) { wrap.appendChild(ul); ul = null; } };
+  const inline = (parent, text) => {
+    (text.split(/(\*\*[^*]+\*\*)/)).forEach((seg) => {
+      if (/^\*\*[^*]+\*\*$/.test(seg)) parent.appendChild(el("strong", "", seg.slice(2, -2)));
+      else if (seg) parent.appendChild(document.createTextNode(seg));
+    });
+  };
+  (md || "").split("\n").forEach((raw) => {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { flush(); return; }
+    let mm;
+    if ((mm = /^(#{1,6})\s+(.*)$/.exec(line))) {
+      flush();
+      const h = el("div", "md-h md-h" + Math.min(mm[1].length, 4)); inline(h, mm[2]); wrap.appendChild(h);
+    } else if ((mm = /^\s*[-*・]\s+(.*)$/.exec(line))) {
+      if (!ul) ul = el("ul", "md-ul");
+      const li = el("li", ""); inline(li, mm[1]); ul.appendChild(li);
+    } else {
+      flush();
+      const p = el("p", "md-p"); inline(p, line.trim()); wrap.appendChild(p);
+    }
+  });
+  flush();
+  return wrap;
+}
+
 // E3 — in-app viewer: open the uploaded file inside the modal. Photos render as
 // a zoomable <img>; PDFs use the browser's native viewer via a same-origin
 // <iframe> (no JS PDF library — dependency-free, offline). thumb_url = "/" +
@@ -1234,8 +1624,66 @@ function openSyncModal() {
   document.body.appendChild(ov);
 }
 
+// ---------- G2: 学び方（study methods）----------
+async function loadMethods() {
+  try { S.methods = await api("/api/methods"); } catch (e) { S.methods = []; }
+}
+// A per-card "学び方" picker: pick a method and re-cast the card into it (1 AI call).
+function recastRow(card, refresh) {
+  const row = el("div", "recast-row");
+  row.onclick = (e) => e.stopPropagation();   // don't toggle an enclosing checkbox
+  row.appendChild(el("span", "recast-label", "学び方"));
+  const sel = el("select", "recast-sel");
+  (S.methods || []).forEach((m) => {
+    const o = el("option", "", m.name + (m.builtin ? "" : "（独自）"));
+    o.value = m.id; if (m.card_type === card.card_type) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onmousedown = (e) => e.stopPropagation();
+  row.appendChild(sel);
+  const btn = el("button", "btn small ghost", "この学び方にする");
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "AIで変換中…";
+    try {
+      const r = await api(`/api/cards/${card.id}/recast`, { method: "POST", body: JSON.stringify({ method: sel.value }) });
+      if (r.ok) { toast("学び方を変えました", true); if (refresh) refresh(); return; }
+      toast(r.message || "変換に失敗");
+    } catch (e) { toast("変換に失敗: " + e.message); }
+    btn.disabled = false; btn.textContent = "この学び方にする";
+  };
+  row.appendChild(btn);
+  const mk = el("button", "btn small ghost", "＋独自");
+  mk.onclick = () => openMethodModal(() => loadMethods().then(() => refresh && refresh()));
+  row.appendChild(mk);
+  return row;
+}
+function openMethodModal(afterFn) {
+  const ov = el("div", "modal-overlay");
+  const box = el("div", "modal");
+  const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
+  box.appendChild(close);
+  box.appendChild(el("h3", "", "独自の学び方を作る"));
+  box.appendChild(el("div", "sync-note", "保存すると「学び方」の選択肢に加わり、どの教材でも使えます。"));
+  const name = el("input", "ac-in"); name.placeholder = "名前（例：英単語＝例文＋語源）";
+  const base = el("select", "recast-sel");
+  (S.methods || []).filter((m) => m.builtin).forEach((m) => { const o = el("option", "", "ベース: " + m.name); o.value = m.id; base.appendChild(o); });
+  const instr = el("textarea", "ac-in ac-area"); instr.placeholder = "AIへの追加指示（例：例文と語源を必ず添える）"; instr.rows = 3;
+  const save = el("button", "btn primary", "保存");
+  save.onclick = async () => {
+    const n = name.value.trim(); if (!n) { toast("名前を入力してください"); return; }
+    try {
+      await api("/api/methods", { method: "POST", body: JSON.stringify({ name: n, base: base.value, instruction: instr.value.trim() }) });
+      toast("独自メソッドを保存しました", true); ov.remove(); if (afterFn) afterFn();
+    } catch (e) { toast("保存に失敗: " + e.message); }
+  };
+  [name, base, instr, save].forEach((x) => box.appendChild(x));
+  ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  document.body.appendChild(ov);
+}
+
 function init() {
   document.querySelectorAll(".tab").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+  loadMethods();
   $("#theme-toggle").onclick = toggleTheme; syncThemeButton();
   { const si = $("#sync-info"); if (si) si.onclick = openSyncModal; }
   { const fi = $("#file-input"); if (fi) fi.onchange = () => { const files = [...fi.files]; fi.value = ""; if (files.length) uploadFiles(files); }; }
