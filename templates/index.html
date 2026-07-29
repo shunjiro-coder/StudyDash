@@ -11,6 +11,7 @@
   <link rel="preload" as="font" type="font/woff2" crossorigin
         href="{{ url_for('static', filename='vendor/inter/inter-latin-400-normal.woff2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css') }}">
 </head>
 <body>
   <div id="drop-overlay" class="drop-overlay hidden"><div>ここに落とす 📸</div></div>
@@ -99,6 +100,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="{{ url_for('static', filename='vendor/katex/katex.min.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script src="{{ url_for('static', filename='sd-core.js') }}"></script>
   <script src="{{ url_for('static', filename='outline.js') }}"></script>

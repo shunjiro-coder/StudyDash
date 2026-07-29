@@ -1,15 +1,19 @@
-// outline.js — RemNote-style outliner (Phase B1).
+// outline.js — RemNote-style outliner (Phase B1 + B2).
 //
-// Loaded after app.js + sd-core.js as a classic script; reuses app.js's
+// Loaded after app.js + sd-core.js (+ katex) as a classic script; reuses app.js's
 // api()/el()/$()/toast() and sd-core's SD.* without redeclaring them.
 //
-// Editing model (B1): 1 rem = 1 plain plaintext-only block. Plain typing NEVER
-// re-renders the tree (so the caret is left completely alone — the source/preview
-// live-render + caret restoration is Phase B2). Only STRUCTURAL ops (Enter, Tab,
-// collapse, DnD, delete) re-render, after which we re-focus the relevant block.
-// IME-safe: while composing (compositionstart..end / isComposing) Enter/Tab/
-// Backspace handling and saves are suppressed. Autosave: 700ms debounce +
-// sendBeacon on unload.
+// EDITING MODEL
+//   B1: 1 rem = 1 plaintext-only block; plain typing never re-renders.
+//   B2: "focused line = source / unfocused line = rendered preview" (§4). A rem in
+//   preview shows rich HTML (**bold** ==hl== `code` [[ref]] $$latex$$ + card
+//   separators ::/>>/<>/;; and block types: heading/todo/code/quote/divider/
+//   image/latex). On focus it swaps to RAW text for editing; on blur it renders
+//   again. The caret is restored across that swap (click -> caretRangeFromPoint,
+//   keyboard -> offset). Structural ops (Enter/Tab/Backspace/DnD) still re-render
+//   then re-focus. IME-safe: while composing, nothing switches / parses / saves.
+//   Slash menu ("/") inserts block types. Large docs use content-visibility
+//   virtualization + a one-time soft warning. Autosave: 700ms debounce + beacon.
 
 "use strict";
 
@@ -19,11 +23,17 @@ const OUT = {
   saveTimer: null,
   drag: null,         // rem id currently being dragged
   busy: false,        // a structural op (create/reorder/delete) is in flight
+  editing: null,      // rem id currently focused in SOURCE mode (B2), else null
+  slash: null,        // {rid, active, items, start} while the "/" menu is open
+  clickPt: null,      // last pointerdown {x,y} on a rem, for caret-on-click
+  warnedDoc: null,    // doc id we've already shown the "large doc" warning for
 };
 
+const BIG_DOC = 200;    // >this many rems -> enable content-visibility virtualization
+const WARN_DOC = 600;   // >this many rems -> one-time soft performance warning
+
 // Serialize structural ops so a fast double-press (Enter auto-repeat, double Tab)
-// can't re-enter on stale DOM and double-submit (e.g. duplicate a rem). Keydown
-// checks OUT.busy and drops repeats; each op runs inside this guard.
+// can't re-enter on stale DOM and double-submit. Keydown checks OUT.busy.
 async function withBusy(fn) {
   if (OUT.busy) return;
   OUT.busy = true;
@@ -55,6 +65,7 @@ async function openDoc(id) {
 
 async function renderDocList() {
   await flushDirty();
+  closeSlash();
   const host = $("#notes-view"); host.innerHTML = "";
   SD.setCrumbs([]);
   const head = el("div", "notes-head");
@@ -97,6 +108,7 @@ function docLabel(d) {
 // -------------------------------------------------------------------------
 function renderDoc() {
   const host = $("#notes-view"); host.innerHTML = "";
+  closeSlash();
   const doc = OUT.doc;
   SD.setCrumbs([{ label: "ノート", onClick: renderDocList }, { label: docLabel(doc) }]);
 
@@ -109,12 +121,16 @@ function renderDoc() {
   };
   host.appendChild(title);
 
-  const tree = el("div", "rem-tree");
-  tree.onclick = (e) => { if (e.target === tree) focusLastRem(); };   // click empty space -> last rem
-  host.appendChild(tree);
+  const treeEl = el("div", "rem-tree");
+  treeEl.onclick = (e) => { if (e.target === treeEl) focusLastRem(); };   // click empty space -> last rem
+  host.appendChild(treeEl);
   renderTree();
 
   if (!doc.rems.length) createRem({ parent_id: null, after_id: null, focus: true });
+  else if (doc.rems.length > WARN_DOC && OUT.warnedDoc !== doc.id) {
+    OUT.warnedDoc = doc.id;
+    toast(doc.rems.length + " 項目：大きなノートです。分割すると軽くなります");
+  }
 }
 
 function tree() { return $(".rem-tree"); }
@@ -125,35 +141,70 @@ function childrenOf(pid) {
     .sort((a, b) => a.position - b.position || a.id - b.id);
 }
 
+// flattened depth-first order of the currently VISIBLE rems (collapsed subtrees
+// excluded) — the order ArrowUp/ArrowDown walk.
+function visibleRems() {
+  const out = [];
+  (function walk(pid) {
+    childrenOf(pid).forEach((r) => { out.push(r); if (!r.collapsed) walk(r.id); });
+  })(null);
+  return out;
+}
+
 function renderTree() {
+  OUT.editing = null;           // DOM about to be rebuilt; focus() will re-establish
   const t = tree(); if (!t) return;
+  t.classList.toggle("big", OUT.doc.rems.length > BIG_DOC);
   t.innerHTML = "";
   childrenOf(null).forEach((r) => t.appendChild(remNode(r)));
 }
 
 function remNode(r) {
-  const node = el("div", "rem-node" + (r.done ? " done" : ""));
+  const type = r.rem_type || "bullet";
+  const node = el("div", "rem-node type-" + type + (r.done ? " done" : ""));
   node.dataset.id = r.id;
+  if (type === "heading") node.dataset.level = String((r.props && r.props.level) || 1);
 
   const row = el("div", "rem-row");
+
   const handle = el("span", "rem-handle", "⠿");
   handle.draggable = true;
+  handle.setAttribute("aria-hidden", "true");
   handle.addEventListener("dragstart", (e) => { OUT.drag = r.id; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; });
   handle.addEventListener("dragend", () => { OUT.drag = null; clearDropMarks(); });
   row.appendChild(handle);
 
   const kids = childrenOf(r.id);
   const caret = el("span", "rem-caret" + (kids.length ? "" : " leaf"), r.collapsed ? "▸" : "▾");
-  if (kids.length) caret.onclick = () => toggleCollapse(r);
+  if (kids.length) {
+    caret.setAttribute("role", "button");
+    caret.setAttribute("aria-label", r.collapsed ? "展開" : "折りたたむ");
+    caret.setAttribute("aria-expanded", r.collapsed ? "false" : "true");
+    caret.tabIndex = 0;
+    caret.onclick = () => toggleCollapse(r);
+    caret.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleCollapse(r); } };
+  }
   row.appendChild(caret);
 
-  row.appendChild(el("span", "rem-bullet", "•"));
+  if (type === "todo") {
+    const cb = el("span", "rem-check" + (r.done ? " checked" : ""), r.done ? "✓" : "");
+    cb.setAttribute("role", "checkbox");
+    cb.setAttribute("aria-checked", r.done ? "true" : "false");
+    cb.tabIndex = 0;
+    cb.onclick = () => toggleRemDone(r);
+    cb.onkeydown = (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleRemDone(r); } };
+    row.appendChild(cb);
+  } else {
+    row.appendChild(el("span", "rem-bullet", type === "divider" ? "" : "•"));
+  }
 
-  const text = el("div", "rem-text" + (r.text ? "" : " empty"));
-  text.contentEditable = "plaintext-only";
+  const text = el("div", "rem-text");
+  text.contentEditable = getCE();
   text.dataset.id = r.id;
-  text.dataset.ph = "";
-  text.textContent = r.text || "";
+  text.dataset.ph = placeholderFor(r);
+  text.setAttribute("role", "textbox");
+  text.setAttribute("aria-label", "ノート項目");
+  setPreview(text, r);
   wireRemText(text, r);
   row.appendChild(text);
 
@@ -168,29 +219,185 @@ function remNode(r) {
   return node;
 }
 
+function placeholderFor(r) {
+  if (r.rem_type === "code") return "コード";
+  const roots = childrenOf(null);
+  if (r.parent_id == null && roots[0] && roots[0].id === r.id) return "入力…（「/」でブロック挿入）";
+  return "";
+}
+
+// contenteditable=plaintext-only is IME-safe (Chrome/Safari). Feature-detect once;
+// fall back to =true (with paste sanitizing, see wireRemText) for anything else.
+let _CE = null;
+function getCE() {
+  if (_CE) return _CE;
+  try {
+    const d = document.createElement("div");
+    d.contentEditable = "plaintext-only";
+    _CE = d.contentEditable === "plaintext-only" ? "plaintext-only" : "true";
+  } catch (e) { _CE = "true"; }
+  return _CE;
+}
+
+// -------------------------------------------------------------------------
+// Inline / block rendering (preview mode)
+// -------------------------------------------------------------------------
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function renderInline(raw) {
+  if (!raw) return "";
+  // single left-to-right pass: each token type is handled exactly once, so no
+  // escaping/decoration leaks into code or math and no sentinel chars are needed.
+  const re = /(\$\$[^$]+?\$\$)|(\$[^$\n]+?\$)|(`[^`]+?`)|(\*\*[^*]+?\*\*)|(\*[^*\n]+?\*)|(==[^=]+?==)|(\[\[[^\][]+?\]\])/g;
+  let out = "", last = 0, m;
+  while ((m = re.exec(raw))) {
+    out += escInline(raw.slice(last, m.index));
+    const tok = m[0];
+    if (m[1] || m[2]) out += renderMath(tok.replace(/^\$+|\$+$/g, ""), false);
+    else if (m[3]) out += '<code class="rem-code">' + esc(tok.slice(1, -1)) + "</code>";
+    else if (m[4]) out += "<strong>" + esc(tok.slice(2, -2)) + "</strong>";
+    else if (m[5]) out += "<em>" + esc(tok.slice(1, -1)) + "</em>";
+    else if (m[6]) out += "<mark>" + esc(tok.slice(2, -2)) + "</mark>";
+    else { const t = tok.slice(2, -2); out += '<span class="rem-ref" data-ref="' + esc(t) + '">' + esc(t) + "</span>"; }
+    last = m.index + tok.length;
+  }
+  out += escInline(raw.slice(last));
+  return out;
+}
+
+// escape a plain-text segment + style top-level card separators (Phase C makes
+// these real cards; B2 only styles them). Matches the escaped forms of < and >.
+function escInline(s) {
+  s = esc(s);
+  s = s.replace(/(^|\s)(::|&gt;&gt;|&lt;&gt;|;;)(?=\s|$)/g, '$1<span class="rem-sep">$2</span>');
+  return s;
+}
+
+function renderMath(tex, display) {
+  if (window.katex) {
+    try { return window.katex.renderToString(tex, { displayMode: !!display, throwOnError: false }); }
+    catch (e) { /* fall through to plain */ }
+  }
+  return '<code class="rem-math-fallback">' + esc(tex) + "</code>";
+}
+
+function previewHTML(r) {
+  const t = r.rem_type || "bullet";
+  if (t === "divider") return '<hr class="rem-hr">';
+  if (t === "latex") return r.text ? renderMath(r.text, true) : '<span class="rem-ph-in">数式（クリックで入力）</span>';
+  if (t === "image") {
+    const src = r.props && r.props.src;
+    return src ? '<img class="rem-img" src="' + esc(src) + '" alt="' + esc(r.text || "") + '">'
+               : '<span class="rem-ph-in">画像URL未設定</span>';
+  }
+  if (t === "code") return r.text ? esc(r.text) : "";
+  return renderInline(r.text);   // bullet / heading / quote / todo
+}
+
+function setPreview(text, r) {
+  text.innerHTML = previewHTML(r);
+  const textual = ["bullet", "heading", "todo", "quote", "code"].indexOf(r.rem_type || "bullet") >= 0;
+  text.classList.toggle("empty", textual && !r.text);
+}
+
+// -------------------------------------------------------------------------
+// Source <-> preview swap (B2 core)
+// -------------------------------------------------------------------------
+function enterEdit(text, r, hint) {
+  if (OUT.editing === r.id) {                    // already editing this rem
+    if (typeof hint === "number") setCaret(text, hint);
+    return;
+  }
+  OUT.editing = r.id;
+  const node = text.closest(".rem-node"); if (node) node.classList.add("editing");
+  text.textContent = r.text || "";               // rendered HTML -> raw source
+  text.classList.toggle("empty", !r.text);
+  if (typeof hint === "number") setCaret(text, hint);
+  else if (hint === "point" && OUT.clickPt) placeCaretFromPoint(text, OUT.clickPt);
+  else setCaret(text, (r.text || "").length);
+  OUT.clickPt = null;
+}
+
+function exitEdit(text, r) {
+  if (OUT.editing === r.id) OUT.editing = null;
+  const node = text.closest(".rem-node"); if (node) node.classList.remove("editing");
+  setPreview(text, r);                            // raw source -> rendered preview
+  flushSoon(0);
+}
+
 // -------------------------------------------------------------------------
 // Editing one rem block
 // -------------------------------------------------------------------------
 function wireRemText(text, r) {
   let composing = false;
   text.addEventListener("compositionstart", () => { composing = true; });
-  text.addEventListener("compositionend", () => { composing = false; markDirty(r.id, text.textContent, text); });
-  text.addEventListener("input", () => { text.classList.toggle("empty", !text.textContent); if (!composing) markDirty(r.id, text.textContent, text); });
+  text.addEventListener("compositionend", () => {
+    composing = false;
+    markDirty(r.id, text.textContent, text);
+    updateSlash(text, r);
+  });
+
+  text.addEventListener("pointerdown", (e) => { OUT.clickPt = { x: e.clientX, y: e.clientY }; });
+  text.addEventListener("focus", () => { enterEdit(text, r, OUT.clickPt ? "point" : undefined); });
+  text.addEventListener("blur", () => { closeSlash(); exitEdit(text, r); });
+
+  // paste sanitize — only needed on the contenteditable=true fallback; in
+  // plaintext-only the browser already strips markup.
+  text.addEventListener("paste", (e) => {
+    if (getCE() === "plaintext-only") return;
+    e.preventDefault();
+    const cb = e.clipboardData || window.clipboardData;
+    const t = cb && cb.getData ? cb.getData("text") : "";
+    document.execCommand("insertText", false, t);
+  });
+
+  text.addEventListener("input", () => {
+    text.classList.toggle("empty", !text.textContent);
+    if (composing) return;
+    markDirty(r.id, text.textContent, text);
+    updateSlash(text, r);
+  });
+
   text.addEventListener("keydown", (e) => {
-    if (composing || e.isComposing) return;   // never act mid-IME
+    // 1) the slash menu owns keys while it's open on THIS rem
+    if (OUT.slash && OUT.slash.rid === r.id) {
+      if (e.key === "ArrowDown") { e.preventDefault(); moveSlash(1); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); moveSlash(-1); return; }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault(); e.stopPropagation();
+        const it = OUT.slash.items[OUT.slash.active];
+        if (it && !it.soon) applySlash(it, text, r);
+        else if (it) toast("Phase D で対応します");
+        return;
+      }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSlash(); return; }
+    }
+
+    if (composing || e.isComposing) return;      // never act mid-IME
+
+    // 2) vertical navigation between rems (only when the caret is on the edge line)
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const dir = e.key === "ArrowUp" ? -1 : 1;
+      if (atEdgeLine(text, dir)) { e.preventDefault(); moveVertical(r, dir, caretX()); }
+      return;
+    }
+
+    // 3) structural edits
     const structural =
       (e.key === "Enter" && !e.shiftKey) ||
       e.key === "Tab" ||
       (e.key === "Backspace" && caretOffset(text) === 0 && !hasSelection());
     if (!structural) return;
-    e.preventDefault();                        // consume even while busy, so the key never inserts
-    if (OUT.busy) return;                      // an op is in flight — drop this repeat
+    e.preventDefault();                           // consume even while busy
+    if (OUT.busy) return;                         // an op is in flight — drop repeat
     if (e.key === "Enter") withBusy(() => onEnter(r, text));
     else if (e.key === "Tab" && !e.shiftKey) withBusy(() => indent(r, caretOffset(text)));
     else if (e.key === "Tab" && e.shiftKey) withBusy(() => outdent(r, caretOffset(text)));
     else withBusy(() => onBackspaceStart(r, text));
   });
-  text.addEventListener("blur", () => flushSoon(0));
 }
 
 function markDirty(id, txt, node) {
@@ -216,7 +423,7 @@ async function flushDirty() {
     // this batch was in flight (that newer text must win, else a reload loses it).
     let restored = false;
     items.forEach((it) => { if (!OUT.dirty.has(it.id)) { OUT.dirty.set(it.id, it.text); restored = true; } });
-    if (restored) flushSoon(2000);   // re-arm so the restored items are resent
+    if (restored) flushSoon(2000);
   }
 }
 
@@ -229,6 +436,136 @@ window.addEventListener("beforeunload", () => {
     navigator.sendBeacon("/api/rems/batch", blob);
   } catch (e) { /* ignore */ }
 });
+
+// -------------------------------------------------------------------------
+// Slash menu (block insertion)
+// -------------------------------------------------------------------------
+const SLASH_ITEMS = [
+  { key: "h1", label: "見出し1", hint: "大見出し", type: "heading", props: { level: 1 } },
+  { key: "h2", label: "見出し2", hint: "中見出し", type: "heading", props: { level: 2 } },
+  { key: "h3", label: "見出し3", hint: "小見出し", type: "heading", props: { level: 3 } },
+  { key: "todo", label: "TODO", hint: "チェックボックス", type: "todo" },
+  { key: "quote", label: "引用", hint: "引用ブロック", type: "quote" },
+  { key: "code", label: "コード", hint: "等幅ブロック", type: "code" },
+  { key: "divider", label: "区切り", hint: "水平線", type: "divider", clears: true },
+  { key: "latex math", label: "数式 (LaTeX)", hint: "$$ e=mc^2 $$", type: "latex" },
+  { key: "image", label: "画像", hint: "URL を挿入", type: "image", image: true },
+  { key: "bullet text", label: "箇条書き", hint: "標準の行に戻す", type: "bullet" },
+  { key: "table", label: "表", hint: "後日対応 (Phase D)", soon: true },
+  { key: "portal", label: "ポータル", hint: "後日対応 (Phase D)", soon: true },
+];
+
+// If the text just before the caret is a "/word" token (start of line or after a
+// space), return {q, start}; else null.
+function slashQuery(text) {
+  const off = caretOffset(text);
+  const s = (text.textContent || "").slice(0, off);
+  const m = s.match(/(?:^|\s)\/([^\s/]*)$/);
+  return m ? { q: m[1], start: off - m[1].length - 1 } : null;
+}
+
+function slashMatches(q) {
+  q = (q || "").toLowerCase();
+  if (!q) return SLASH_ITEMS;
+  return SLASH_ITEMS.filter((it) => it.key.indexOf(q) >= 0 || it.label.toLowerCase().indexOf(q) >= 0);
+}
+
+function updateSlash(text, r) {
+  const sq = slashQuery(text);
+  if (!sq) { closeSlash(); return; }
+  const items = slashMatches(sq.q);
+  if (!items.length) { closeSlash(); return; }
+  if (!OUT.slash || OUT.slash.rid !== r.id) OUT.slash = { rid: r.id, active: 0, items, start: sq.start };
+  else {
+    OUT.slash.items = items; OUT.slash.start = sq.start;
+    if (OUT.slash.active >= items.length) OUT.slash.active = 0;
+  }
+  renderSlashMenu(text);
+}
+
+function closeSlash() {
+  OUT.slash = null;
+  const m = document.getElementById("slash-menu");
+  if (m) m.remove();
+}
+
+function moveSlash(d) {
+  if (!OUT.slash) return;
+  const n = OUT.slash.items.length;
+  OUT.slash.active = (OUT.slash.active + d + n) % n;
+  renderSlashMenu();
+}
+
+function renderSlashMenu(text) {
+  if (!OUT.slash) return;
+  let m = document.getElementById("slash-menu");
+  if (!m) { m = el("div", "slash-menu"); m.id = "slash-menu"; m.setAttribute("role", "listbox"); document.body.appendChild(m); }
+  m.innerHTML = "";
+  OUT.slash.items.forEach((it, i) => {
+    const row = el("div", "slash-item" + (i === OUT.slash.active ? " active" : "") + (it.soon ? " soon" : ""));
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", i === OUT.slash.active ? "true" : "false");
+    row.appendChild(el("span", "slash-label", it.label));
+    row.appendChild(el("span", "slash-hint", it.hint));
+    row.addEventListener("pointerdown", (e) => {
+      e.preventDefault();                         // keep focus in the rem
+      if (it.soon) { toast("Phase D で対応します"); return; }
+      const t = document.querySelector('.rem-text[data-id="' + OUT.slash.rid + '"]');
+      const rr = OUT.doc.rems.find((x) => x.id === OUT.slash.rid);
+      if (t && rr) applySlash(it, t, rr);
+    });
+    m.appendChild(row);
+  });
+  if (text) {
+    const cr = caretRect(text);
+    if (cr) {
+      const mh = 280;   // keep the popover on-screen (flip above the caret if needed)
+      const below = cr.bottom + 4;
+      m.style.left = Math.round(Math.min(cr.left, window.innerWidth - 240)) + "px";
+      m.style.top = Math.round(below + mh > window.innerHeight ? Math.max(4, cr.top - mh) : below) + "px";
+    }
+  }
+}
+
+async function applySlash(item, text, r) {
+  const start = OUT.slash ? OUT.slash.start : null;
+  closeSlash();
+  if (!text || !r) return;
+  // strip the "/query" token the user typed
+  let raw = text.textContent || "";
+  const off = caretOffset(text);
+  if (start != null && start >= 0 && start <= off) raw = raw.slice(0, start) + raw.slice(off);
+
+  let props = item.props;
+  const newText = item.clears ? "" : raw;
+  if (item.image) {
+    const url = window.prompt("画像URL（http... または file...）");
+    if (!url) { text.textContent = raw; markDirty(r.id, raw, text); focusRem(r.id, raw.length); return; }
+    props = { src: url };
+  }
+  await setRemType(r, item.type, props, newText);
+}
+
+async function setRemType(r, type, props, newText) {
+  const body = { rem_type: type };
+  if (props !== undefined) body.props = props;
+  if (newText !== undefined) body.text = newText;
+  OUT.dirty.delete(r.id);
+  clearTimeout(OUT.saveTimer);
+  try {
+    const out = await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify(body) });
+    r.rem_type = out.rem_type; r.props = out.props; r.text = out.text;
+  } catch (e) { toast("変更に失敗"); return; }
+  renderTree();
+  focusRem(r.id, (r.text || "").length);
+}
+
+async function toggleRemDone(r) {
+  r.done = !r.done;
+  renderTree();
+  try { await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify({ done: r.done }) }); }
+  catch (e) { /* non-critical */ }
+}
 
 // -------------------------------------------------------------------------
 // Structural operations
@@ -261,6 +598,7 @@ async function onEnter(r, text) {
     try { await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify({ text: before }) }); r.text = before; }
     catch (e) { toast("保存に失敗"); return; }
   }
+  // a new line starts as a plain bullet even if this one is a heading/todo/etc.
   await createRem({ parent_id: r.parent_id, after_id: r.id, text: after, focus: true });
 }
 
@@ -341,6 +679,7 @@ async function deleteRem(r, silent) {
 async function toggleCollapse(r) {
   r.collapsed = !r.collapsed;
   renderTree();
+  focusRem(r.id, (r.text || "").length);      // keep focus on the rem (a11y)
   try { await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify({ collapsed: r.collapsed }) }); } catch (e) { /* non-critical */ }
 }
 
@@ -367,7 +706,6 @@ function wireDrop(row, r) {
     if (OUT.busy) return;
     const dragged = OUT.doc.rems.find((x) => x.id === dragId);
     if (!dragged) return;
-    // drop makes `dragged` a sibling of `r`, before or after it
     const sibs = childrenOf(r.parent_id).filter((x) => x.id !== dragId);
     const idx = sibs.findIndex((x) => x.id === r.id);
     const afterId = after ? r.id : (idx > 0 ? sibs[idx - 1].id : null);
@@ -399,7 +737,7 @@ function focusRem(id, offset) {
   requestAnimationFrame(() => {
     const node = document.querySelector('.rem-text[data-id="' + id + '"]');
     if (!node) return;
-    node.focus();
+    node.focus();                 // -> enterEdit swaps to raw source
     setCaret(node, offset);
   });
 }
@@ -424,6 +762,67 @@ function setCaret(node, offset) {
     sel.removeAllRanges();
     sel.addRange(range);
   } catch (e) { /* ignore */ }
+}
+
+// place the caret at a viewport point inside `node` (used after a click swaps the
+// rendered preview to raw source). Falls back to end-of-text.
+function placeCaretFromPoint(node, pt) {
+  try {
+    const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(pt.x, pt.y) : null;
+    if (r && node.contains(r.startContainer)) {
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(r);
+      return;
+    }
+  } catch (e) { /* ignore */ }
+  setCaret(node, (node.textContent || "").length);
+}
+
+function caretRect(node) {
+  const s = window.getSelection();
+  if (s && s.rangeCount) {
+    const r = s.getRangeAt(0).cloneRange();
+    const rects = r.getClientRects();
+    let rc = rects[rects.length - 1];
+    if (!rc || !rc.height) rc = r.getBoundingClientRect();
+    if (rc && (rc.height || rc.width || rc.top)) return rc;
+  }
+  return node.getBoundingClientRect();
+}
+
+function caretX() {
+  const s = window.getSelection();
+  if (!s || !s.rangeCount) return null;
+  const rc = caretRect(document.activeElement || document.body);
+  return rc ? rc.left : null;
+}
+
+// is the caret on the first (dir<0) / last (dir>0) visual line of `node`?
+function atEdgeLine(node, dir) {
+  const s = window.getSelection();
+  if (!s || !s.rangeCount) return true;
+  const range = s.getRangeAt(0);
+  if (!node.contains(range.endContainer)) return true;
+  const cr = range.getBoundingClientRect();
+  if (!cr || (!cr.height && !cr.top)) return true;            // empty line -> edge
+  const er = node.getBoundingClientRect();
+  const lh = parseFloat(getComputedStyle(node).lineHeight) || 20;
+  return dir < 0 ? (cr.top - er.top) < lh * 0.75 : (er.bottom - cr.bottom) < lh * 0.75;
+}
+
+function moveVertical(r, dir, x) {
+  const vis = visibleRems();
+  const i = vis.findIndex((v) => v.id === r.id);
+  const target = vis[i + dir];
+  if (!target) return;
+  requestAnimationFrame(() => {
+    const node = document.querySelector('.rem-text[data-id="' + target.id + '"]');
+    if (!node) return;
+    node.focus();                                 // -> enterEdit swaps to raw
+    const rect = node.getBoundingClientRect();
+    const y = dir < 0 ? rect.bottom - 4 : rect.top + 4;
+    placeCaretFromPoint(node, { x: x != null ? x : rect.left + 4, y });
+  });
 }
 
 function relTime(iso) {
