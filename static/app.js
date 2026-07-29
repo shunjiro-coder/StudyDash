@@ -7,6 +7,7 @@ const S = {
   editId: null,
   af: { due: "tomorrow", min: 60 },
   matStatus: {},   // material id -> last-seen status (honest completion detection)
+  uploading: 0,    // optimistic count of files being uploaded (pre-first-poll UI)
   review: { queue: [], idx: 0, revealed: false, mode: "", label: "" },
 };
 
@@ -466,6 +467,86 @@ async function grade(g) {
 const STAGE = { extracting: "文字を読む…", generating: "カード作成…", done: "完了", failed: "失敗" };
 const selMat = new Set();
 
+// ---- E1: honest upload/analysis progress (indeterminate — no fake %) ----
+const STAGE_STEPS = ["upload", "extract", "generate", "done"];
+function stageIndex(status) {
+  if (status === "extracting") return 1;
+  if (status === "generating") return 2;
+  if (status === "done") return 3;
+  return 1;
+}
+function fmtElapsed(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso)) / 1000));
+  const m = Math.floor(s / 60);
+  return m > 0 ? m + "分" + String(s % 60).padStart(2, "0") + "秒" : s + "秒";
+}
+function buildProgress(m) {
+  const box = el("div", "mat-progress");
+  const bar = el("div", "mat-bar"); bar.appendChild(el("div", "mat-bar-fill")); box.appendChild(bar);
+  const steps = el("div", "mat-steps");
+  const active = stageIndex(m.status);
+  for (let i = 0; i < STAGE_STEPS.length; i++)
+    steps.appendChild(el("span", "mat-dot" + (i < active ? " done" : i === active ? " active" : "")));
+  box.appendChild(steps);
+  const meta = el("div", "mat-elapsed");
+  meta.appendChild(el("span", "", m.status === "extracting" ? "読み取り中… " : "カード作成中… "));
+  meta.appendChild(el("span", "mat-elapsed-t", fmtElapsed(m.created_at)));
+  box.appendChild(meta);
+  return box;
+}
+function uploadingTile() {
+  const t = el("div", "mat-tile inflight uploading");
+  t.appendChild(el("div", "mat-ph", "⬆️"));
+  const box = el("div", "mat-progress");
+  const bar = el("div", "mat-bar"); bar.appendChild(el("div", "mat-bar-fill")); box.appendChild(bar);
+  box.appendChild(el("div", "mat-elapsed", "アップロード中…"));
+  t.appendChild(box);
+  return t;
+}
+let elapsedTimer = null;
+function ensureElapsedTicker() {
+  if (elapsedTimer) return;
+  elapsedTimer = setInterval(() => {
+    let any = false;
+    document.querySelectorAll(".mat-tile.inflight[data-created]").forEach((t) => {
+      const tt = t.querySelector(".mat-elapsed-t"); if (!tt || !t.dataset.created) return;
+      tt.textContent = fmtElapsed(t.dataset.created); any = true;
+    });
+    if (!any) { clearInterval(elapsedTimer); elapsedTimer = null; }
+  }, 1000);
+}
+
+// ---- E2: failure explainer — cause / how-to-succeed / rough odds (heuristic) ----
+function oddsClass(level) { return level === "高い" ? "good" : level === "低い" ? "bad" : "mid"; }
+function classifyFailure(msg, exhausted, hasText) {
+  msg = msg || "";
+  const at = (p) => msg.indexOf(p) >= 0;
+  if (exhausted || at("何度か試しました")) return {
+    cause: "何度試しても読み取れませんでした（画像が不鮮明・内容が複雑など）",
+    fix: ["明るく・正面から・ピントを合わせて撮り直す", "1枚に詰め込みすぎず、ページごとに分ける", "手書きは濃く、できれば活字を使う", "難しければ手動入力が確実です"],
+    odds: { level: "中", note: "撮り直しで改善することが多いですが、内容次第です" }, stage: hasText ? "generate" : "extract" };
+  if (at("AI呼び出し失敗")) return {
+    cause: "AIの呼び出しに失敗（タイムアウト・CLI未検出・混雑など）",
+    fix: ["少し待ってから「もう一度試す」", "claude CLI が使えるか確認する"],
+    odds: { level: "高い", note: "一時的なことが多く、再試行で成功しやすいです" }, stage: "extract" };
+  if (at("解析結果を読めません")) return {
+    cause: "AIは応答しましたが、結果の形式を読み取れませんでした",
+    fix: ["「もう一度試す」で再抽出する", "画像を鮮明なものに差し替える"],
+    odds: { level: "高い", note: "再試行で整うことが多いです" }, stage: "extract" };
+  if (at("生成失敗")) return {
+    cause: "カード生成のAI呼び出しに失敗しました",
+    fix: ["「再生成」で作り直す（抽出結果は再利用）", "少し待ってから再試行する"],
+    odds: { level: "高い", note: "抽出は成功済み。再生成で通ることが多いです" }, stage: "generate" };
+  if (at("生成結果を読めません")) return {
+    cause: "カード生成の結果を読み取れませんでした",
+    fix: ["「再生成」で作り直す"],
+    odds: { level: "高い", note: "再生成でほぼ解決します" }, stage: "generate" };
+  return { cause: msg || "解析に失敗しました",
+    fix: ["「もう一度試す」または「手動で入力する」"],
+    odds: { level: "中", note: "" }, stage: hasText ? "generate" : "extract" };
+}
+
 function aiOffNote() {
   const n = el("div", "ai-off-note");
   n.appendChild(el("div", "", "⚠️ AI機能は現在使えません（claude CLI 未検出）"));
@@ -478,24 +559,28 @@ async function renderMaterials() {
   if (S.meta && !S.meta.claude_ok) p.appendChild(aiOffNote());  // pre-empt wasted drops
   let mats;
   try { mats = await api("/api/materials"); } catch (e) { p.appendChild(el("div", "empty", "読み込み失敗")); return; }
-  if (!mats.length) {
+  if (!mats.length && !S.uploading) {
     const e = el("div", "empty");
     e.appendChild(el("div", "big", "📸"));
     e.appendChild(el("div", "", "写真・PDFをどこにでもドロップすると解析して復習カードを作ります"));
     p.appendChild(e); return;
   }
-  // range presets
-  const bar = el("div", "filters");
-  [["week", "今週"], ["month", "先月〜"], ["all", "全部"]].forEach(([k, l]) => {
-    const b = el("button", "btn small ghost", l);
-    b.onclick = () => { selectRange(mats, k); renderMaterials(); };
-    bar.appendChild(b);
-  });
-  p.appendChild(bar);
+  // range presets (only when there are stored materials)
+  if (mats.length) {
+    const bar = el("div", "filters");
+    [["week", "今週"], ["month", "先月〜"], ["all", "全部"]].forEach(([k, l]) => {
+      const b = el("button", "btn small ghost", l);
+      b.onclick = () => { selectRange(mats, k); renderMaterials(); };
+      bar.appendChild(b);
+    });
+    p.appendChild(bar);
+  }
 
   const grid = el("div", "mat-grid");
+  for (let i = 0; i < (S.uploading || 0); i++) grid.appendChild(uploadingTile());
   mats.forEach((m) => grid.appendChild(matTile(m)));
   p.appendChild(grid);
+  ensureElapsedTicker();
 
   if (selMat.size) {
     const tb = el("div", "select-bar");
@@ -518,12 +603,18 @@ function selectRange(mats, k) {
   });
 }
 function matTile(m) {
-  const t = el("div", "mat-tile" + (selMat.has(m.id) ? " sel" : ""));
+  const flight = inFlight(m.status);
+  const t = el("div", "mat-tile" + (selMat.has(m.id) ? " sel" : "") + (flight ? " inflight" : "") + (m.status === "failed" ? " failed" : ""));
+  if (m.created_at) t.dataset.created = m.created_at;
   if (m.thumb_url && m.kind === "photo") { const img = el("img"); img.src = m.thumb_url; img.loading = "lazy"; t.appendChild(img); }
-  else { const ph = el("div", "mat-ph", m.kind === "pdf" ? "📄" : "📸"); t.appendChild(ph); }
-  const badge = el("div", "mat-badge " + m.status, STAGE[m.status] || m.status);
-  t.appendChild(badge);
-  if (m.summary) t.appendChild(el("div", "mat-sum", m.summary));
+  else { t.appendChild(el("div", "mat-ph", m.kind === "pdf" ? "📄" : "📸")); }
+  if (flight) {
+    t.appendChild(buildProgress(m));
+  } else {
+    t.appendChild(el("div", "mat-badge " + m.status, STAGE[m.status] || m.status));
+    if (m.status === "failed") t.appendChild(el("div", "mat-fail-hint", classifyFailure(m.error_message, m.attempts_exhausted, m.has_text).cause));
+    else if (m.summary) t.appendChild(el("div", "mat-sum", m.summary));
+  }
   const sel = el("button", "mat-sel" + (selMat.has(m.id) ? " on" : ""), selMat.has(m.id) ? "✓" : "");
   sel.onclick = (e) => { e.stopPropagation(); if (selMat.has(m.id)) selMat.delete(m.id); else selMat.add(m.id); renderMaterials(); };
   t.appendChild(sel);
@@ -539,23 +630,51 @@ async function openMaterial(mid) {
   const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
   box.appendChild(close);
   box.appendChild(el("h3", "", m.summary || "教材"));
-  box.appendChild(el("div", "mat-badge inline " + m.status, STAGE[m.status] || m.status));
+  if (inFlight(m.status)) box.appendChild(buildProgress(m));
+  else box.appendChild(el("div", "mat-badge inline " + m.status, STAGE[m.status] || m.status));
 
   if (m.status === "failed") {
-    // failed-after-N is a dead-end unless we offer a way out. When the retry
-    // budget is spent, make "手動で入力する" the primary path; retry stays
-    // available (it resets the counter server-side) but is demoted.
-    const exhausted = m.attempts_exhausted;
+    // Explain the failure: cause + how to succeed + a rough (heuristic) success
+    // likelihood, then offer the right recovery. If extraction already succeeded
+    // (has_text) 再生成 reuses it; else もう一度試す re-runs from scratch; when the
+    // retry budget is spent, 手動で入力する becomes the primary path.
+    const info = classifyFailure(m.error_message, m.attempts_exhausted, m.has_text);
     const err = el("div", "err-box");
-    err.appendChild(el("div", "", m.error_message || "解析に失敗しました"));
-    if (exhausted) err.appendChild(el("div", "err-hint", "何度か試しましたが読み取れませんでした。手動で入力するのが確実です。"));
+    const head = el("div", "err-head");
+    head.appendChild(el("span", "err-ico", "⚠️"));
+    head.appendChild(el("span", "err-cause", info.cause));
+    err.appendChild(head);
+    const odds = el("div", "err-odds odds-" + oddsClass(info.odds.level));
+    odds.appendChild(el("span", "odds-tag", "成功の見込み " + info.odds.level));
+    if (info.odds.note) odds.appendChild(el("span", "odds-note", info.odds.note));
+    err.appendChild(odds);
+    err.appendChild(el("div", "err-sub", "こうすると成功しやすい"));
+    const ul = el("ul", "err-fix");
+    info.fix.forEach((f) => ul.appendChild(el("li", "", f)));
+    err.appendChild(ul);
+    if (m.error_message) {
+      const det = el("details", "err-raw");
+      det.appendChild(el("summary", "", "詳細メッセージ"));
+      det.appendChild(el("div", "", m.error_message));
+      err.appendChild(det);
+    }
+    const exhausted = m.attempts_exhausted;
     const actions = el("div", "add-row end");
-    const retry = el("button", "btn small " + (exhausted ? "ghost" : "primary"), "もう一度試す");
-    retry.onclick = async () => { await api(`/api/materials/${mid}/retry`, { method: "POST" }); toast("再試行中…"); ov.remove(); await refreshMeta(); renderMaterials(); };
-    const man = el("button", "btn small " + (exhausted ? "primary" : ""), "手動で入力する");
-    man.onclick = () => { ov.remove(); switchTab("assignments"); openAdd(); };
-    if (exhausted) { actions.appendChild(man); actions.appendChild(retry); }
-    else { actions.appendChild(retry); actions.appendChild(man); }
+    const mk = (cls, label, fn) => { const b = el("button", "btn small " + cls, label); b.onclick = fn; return b; };
+    const retryFn = async () => { await api(`/api/materials/${mid}/retry`, { method: "POST" }); toast("再試行中…"); ov.remove(); await refreshMeta(); renderMaterials(); };
+    const regenFn = async () => { await api(`/api/materials/${mid}/regenerate`, { method: "POST" }); toast("再生成中…"); ov.remove(); await refreshMeta(); renderMaterials(); };
+    const manFn = () => { ov.remove(); switchTab("assignments"); openAdd(); };
+    if (exhausted) {
+      actions.appendChild(mk("primary", "手動で入力する", manFn));
+      if (m.has_text) actions.appendChild(mk("ghost", "再生成", regenFn));
+      actions.appendChild(mk("ghost", "もう一度試す", retryFn));
+    } else if (m.has_text) {
+      actions.appendChild(mk("primary", "再生成", regenFn));
+      actions.appendChild(mk("ghost", "手動で入力する", manFn));
+    } else {
+      actions.appendChild(mk("primary", "もう一度試す", retryFn));
+      actions.appendChild(mk("ghost", "手動で入力する", manFn));
+    }
     err.appendChild(actions);
     box.appendChild(err);
   }
@@ -698,7 +817,9 @@ async function uploadFiles(files) {
   const fd = new FormData();
   files.forEach((f) => fd.append("files", f));
   toast(`${files.length}件を取り込み中…`);
+  S.uploading = files.length;
   switchTab("materials");
+  renderMaterials();   // optimistic "アップロード中" tiles the instant files are dropped
   try {
     const res = await fetch("/api/upload", { method: "POST", body: fd });
     if (res.status === 404) { toast("解析パイプラインはフェーズ3で有効化されます"); return; }
@@ -711,8 +832,8 @@ async function uploadFiles(files) {
     } else {
       toast(`${r.materials.length}件を取り込みました`, true);
     }
-    await refreshMeta(); renderMaterials();
   } catch (e) { toast("アップロード失敗: " + e.message); }
+  finally { S.uploading = 0; await refreshMeta(); renderMaterials(); }
 }
 
 // ---------- completion notifications ----------
