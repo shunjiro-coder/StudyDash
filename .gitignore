@@ -8,6 +8,7 @@ uploads/
 study.db
 study.db-wal
 study.db-shm
+study.db.bak.*
 exports/
 # local DB backups — git does NOT protect the data (see backup.py); these are
 # the real safety net, kept out of version control.

@@ -679,7 +679,7 @@ async function openMaterial(mid) {
     box.appendChild(err);
   }
 
-  if (m.thumb_url && m.kind === "photo") { const img = el("img", "modal-img"); img.src = m.thumb_url; box.appendChild(img); }
+  box.appendChild(buildViewer(m));
 
   // cards: visual separation of generated vs extracted; 要確認 grouping
   const cards = m.cards || [];
@@ -711,6 +711,32 @@ async function openMaterial(mid) {
 
   ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
   document.body.appendChild(ov);
+}
+// E3 — in-app viewer: open the uploaded file inside the modal. Photos render as
+// a zoomable <img>; PDFs use the browser's native viewer via a same-origin
+// <iframe> (no JS PDF library — dependency-free, offline). thumb_url = "/" +
+// original_path, which is the real file URL for both photo and pdf.
+function buildViewer(m) {
+  const url = m.thumb_url;
+  const wrap = el("div", "mat-view");
+  if (!url) return wrap;
+  if (m.kind === "pdf") {
+    const frame = el("iframe", "mat-view-pdf");
+    frame.src = url; frame.loading = "lazy"; frame.setAttribute("title", "PDFプレビュー");
+    wrap.appendChild(frame);
+  } else {
+    const img = el("img", "mat-view-img");
+    img.src = url; img.alt = "アップロード画像"; img.loading = "lazy";
+    img.title = "クリックで拡大／縮小";
+    img.onclick = () => img.classList.toggle("zoomed");
+    wrap.appendChild(img);
+  }
+  const bar = el("div", "mat-view-bar");
+  const open = el("a", "btn small ghost", "元ファイルを新しいタブで開く ↗");
+  open.href = url; open.target = "_blank"; open.rel = "noopener";
+  bar.appendChild(open);
+  wrap.appendChild(bar);
+  return wrap;
 }
 function cardPreview(c, low) {
   const d = el("div", "card-preview" + (c.origin === "generated" ? " generated" : "") + (low ? " low" : ""));
