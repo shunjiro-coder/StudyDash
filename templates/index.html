@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>StudyDash</title>
   <script>
-    // apply saved theme BEFORE first paint (avoids FOUC); no value -> follow OS via @media
-    try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+    // apply saved theme + accent BEFORE first paint (avoids FOUC); no value -> follow OS via @media
+    try {
+      var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+      var a = localStorage.getItem("accent"); if (a && a !== "indigo") document.documentElement.setAttribute("data-accent", a);
+    } catch (e) {}
   </script>
   <link rel="preload" as="font" type="font/woff2" crossorigin
         href="{{ url_for('static', filename='vendor/inter/inter-latin-400-normal.woff2') }}">
@@ -39,6 +42,7 @@
         <span id="sync-info" class="chip subtle" title="最終同期"></span>
         <span id="cost-meter" class="chip subtle" title="今月の目安"></span>
         <span id="backup-info" class="chip subtle warn hidden" title="バックアップ状態"></span>
+        <button id="accent-toggle" class="chip accent-toggle" type="button" aria-label="アクセント色" aria-haspopup="true" title="アクセント色">●</button>
         <button id="theme-toggle" class="chip theme-toggle" type="button" aria-label="テーマ切替">☾</button>
       </div>
     </aside>

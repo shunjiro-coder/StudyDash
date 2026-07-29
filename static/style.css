@@ -43,9 +43,10 @@
   /* --- shape / space / shadow / motion --- */
   --r-sm: 8px; --r-md: 12px; --radius: var(--r-md);
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --side-w: 224px; --content-max: 940px;   /* layout: sidebar width + reading column */
   --sh-card: 0 1px 3px rgba(0,0,0,.06);
   --sh-pop: 0 6px 20px rgba(0,0,0,.10);
-  --sh-fab: 0 4px 14px rgba(75,69,196,.30);
+  --sh-fab: 0 4px 14px color-mix(in srgb, var(--accent) 32%, transparent);
   --ease: 150ms ease;
   /* --- legacy aliases: declared ONCE, never repeated in a theme block --- */
   --paper: var(--bg); --card: var(--surface); --ink: var(--text); --ink-2: var(--muted);
@@ -82,6 +83,39 @@
 }
 /* explicit light toggle needs no primitive list: :not([data-theme="light"])
    on the @media block already reverts to the base :root light values. */
+
+/* ===== Accent palettes — user-switchable via data-accent (persisted) =====
+   Only the ACCENT trio changes; the neutral canvas/text never move. Indigo is
+   the base :root default (no override). Each palette sets LIGHT values on
+   :root[data-accent=X] and DARK values in BOTH dark scopes (@media + toggle),
+   mirroring the primitive-duplication rule above. Curated for a premium feel +
+   WCAG: light accents carry a white --on-accent (AA on filled buttons); dark
+   accents are light enough for AA text on the dark canvas with a near-black
+   --on-accent. Palette list lives in app.js (ACCENTS) — keep the ids in sync. */
+:root[data-accent="sapphire"] { --accent:#3358d4; --accent-hover:#2b49b0; --on-accent:#ffffff; }
+:root[data-accent="teal"]     { --accent:#0f766e; --accent-hover:#0c5f58; --on-accent:#ffffff; }
+:root[data-accent="emerald"]  { --accent:#0e8a5f; --accent-hover:#0b7150; --on-accent:#ffffff; }
+:root[data-accent="amethyst"] { --accent:#6d40c4; --accent-hover:#5a32a8; --on-accent:#ffffff; }
+:root[data-accent="rose"]     { --accent:#c02a66; --accent-hover:#a11f54; --on-accent:#ffffff; }
+:root[data-accent="amber"]    { --accent:#b26a00; --accent-hover:#945800; --on-accent:#ffffff; }
+:root[data-accent="graphite"] { --accent:#475569; --accent-hover:#37414f; --on-accent:#ffffff; }
+@media (prefers-color-scheme: dark) {
+  :root[data-accent="sapphire"]:not([data-theme="light"]) { --accent:#8fb0ff; --accent-hover:#a6c0ff; --on-accent:#12151b; }
+  :root[data-accent="teal"]:not([data-theme="light"])     { --accent:#4fd1c5; --accent-hover:#6ee0d6; --on-accent:#12151b; }
+  :root[data-accent="emerald"]:not([data-theme="light"])  { --accent:#43c88d; --accent-hover:#5fd6a0; --on-accent:#12151b; }
+  :root[data-accent="amethyst"]:not([data-theme="light"]) { --accent:#b292f0; --accent-hover:#c2a8f4; --on-accent:#12151b; }
+  :root[data-accent="rose"]:not([data-theme="light"])     { --accent:#ee85aa; --accent-hover:#f29cba; --on-accent:#12151b; }
+  :root[data-accent="amber"]:not([data-theme="light"])    { --accent:#e0a94e; --accent-hover:#eab968; --on-accent:#12151b; }
+  :root[data-accent="graphite"]:not([data-theme="light"]) { --accent:#9aa6b8; --accent-hover:#b2bccc; --on-accent:#12151b; }
+}
+:root[data-theme="dark"][data-accent="sapphire"] { --accent:#8fb0ff; --accent-hover:#a6c0ff; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="teal"]     { --accent:#4fd1c5; --accent-hover:#6ee0d6; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="emerald"]  { --accent:#43c88d; --accent-hover:#5fd6a0; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="amethyst"] { --accent:#b292f0; --accent-hover:#c2a8f4; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="rose"]     { --accent:#ee85aa; --accent-hover:#f29cba; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="amber"]    { --accent:#e0a94e; --accent-hover:#eab968; --on-accent:#12151b; }
+:root[data-theme="dark"][data-accent="graphite"] { --accent:#9aa6b8; --accent-hover:#b2bccc; --on-accent:#12151b; }
+
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .badge, .chip, .review-progress, .meta-line, .ring-num { font-variant-numeric: tabular-nums; }
 * { box-sizing: border-box; }
@@ -403,12 +437,10 @@ select, input[type=text], input[type=number], input[type=date] {
    ======================================================================== */
 .shell {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: var(--side-w) minmax(0, 1fr);
   min-height: 100vh;
-  max-width: 1180px;
-  margin: 0 auto;
 }
-.shell.has-right { grid-template-columns: 240px minmax(0, 1fr) 300px; }
+.shell.has-right { grid-template-columns: var(--side-w) minmax(0, 1fr) 300px; }
 
 .sidebar {
   position: sticky; top: 0; align-self: start; height: 100vh;
@@ -416,17 +448,17 @@ select, input[type=text], input[type=number], input[type=date] {
   background: var(--surface); border-right: 1px solid var(--border);
   padding: 16px 10px calc(10px + env(safe-area-inset-bottom));
 }
-.side-brand { font-weight: 700; font-size: 18px; letter-spacing: .02em; padding: 4px 8px 10px; }
-.side-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
+.side-brand { font-weight: 700; font-size: 16px; letter-spacing: .02em; padding: 2px 8px 8px; }
+.side-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; overflow-y: auto; }
 .side-label {
-  font-size: 11px; font-weight: 700; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .05em; margin: 14px 8px 4px;
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; margin: 12px 8px 3px;
 }
 .side-item {
   display: flex; align-items: center; gap: 8px;
-  width: 100%; text-align: left; min-height: 40px;
-  padding: 8px 10px; border: none; border-radius: var(--r-sm);
-  background: none; color: var(--text); font: inherit; font-weight: 600;
+  width: 100%; text-align: left; min-height: 33px;
+  padding: 5px 10px; border: none; border-radius: var(--r-sm);
+  background: none; color: var(--text); font: inherit; font-size: 14px; font-weight: 600;
   cursor: pointer;
 }
 .side-item:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -437,6 +469,26 @@ select, input[type=text], input[type=number], input[type=date] {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
   padding-top: 10px; margin-top: 4px; border-top: 1px solid var(--border);
 }
+/* accent palette picker (footer chip shows the live accent as a dot) */
+.accent-toggle { color: var(--accent); font-size: 13px; line-height: 1; padding: 4px 9px; }
+.accent-menu {
+  position: fixed; z-index: 60; width: 176px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--sh-pop); padding: 10px;
+}
+.accent-menu-title {
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; margin: 2px 2px 8px;
+}
+.accent-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; justify-items: center; }
+.accent-sw {
+  width: 30px; height: 30px; border-radius: 999px; border: 2px solid transparent;
+  padding: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0,0,0,.10);
+  transition: transform var(--ease);
+}
+.accent-sw:hover { transform: scale(1.08); }
+.accent-sw.current { border-color: var(--text); }
+.accent-sw:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .side-toggle {
   display: none; align-items: center; justify-content: center;
   position: fixed; top: 8px; left: 8px; z-index: 45; width: 40px; height: 40px;
@@ -448,7 +500,7 @@ select, input[type=text], input[type=number], input[type=date] {
 .canvas { min-width: 0; padding: 20px 24px 96px; }
 .canvas > #main,
 .canvas > .notes-view,
-.canvas > .crumbs { max-width: 760px; margin-left: auto; margin-right: auto; }
+.canvas > .crumbs { max-width: var(--content-max); margin-left: 0; margin-right: auto; }
 
 .rightbar { border-left: 1px solid var(--border); background: var(--surface); padding: 16px 14px; }
 
@@ -468,8 +520,24 @@ select, input[type=text], input[type=number], input[type=date] {
   background: var(--surface); cursor: pointer;
 }
 .doc-item:hover { border-color: var(--accent); box-shadow: var(--sh-card); }
-.doc-item .title { font-weight: 600; }
+.doc-main { min-width: 0; }
+.doc-item .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-item .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* hover-reveal per-note actions (rename / delete) — resting state is pure text */
+.doc-actions { display: flex; gap: 2px; flex: none; opacity: 0; transition: opacity var(--ease); }
+.doc-item:hover .doc-actions, .doc-item:focus-within .doc-actions { opacity: 1; }
+.doc-act {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 5px 7px; border-radius: var(--r-sm);
+}
+.doc-act:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.doc-act.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.doc-item .rename-input {
+  font: inherit; font-weight: 600; width: 100%; max-width: 340px;
+  border: 1px solid var(--accent); border-radius: var(--r-sm);
+  padding: 4px 8px; background: var(--bg); color: var(--text);
+}
+.doc-item .rename-input:focus { outline: none; }
 
 /* notes: doc title + outline tree */
 .doc-title {

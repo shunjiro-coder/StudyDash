@@ -764,10 +764,64 @@ function applyTheme(t) {
 }
 function toggleTheme() { applyTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
 
+// ---------- accent palette (user-switchable, persisted; CSS in style.css) ----------
+// ids MUST match the :root[data-accent=…] rules in style.css. sw = the LIGHT swatch.
+const ACCENTS = [
+  { id: "indigo",   name: "Indigo",   sw: "#4b45c4" },
+  { id: "sapphire", name: "Sapphire", sw: "#3358d4" },
+  { id: "teal",     name: "Teal",     sw: "#0f766e" },
+  { id: "emerald",  name: "Emerald",  sw: "#0e8a5f" },
+  { id: "amethyst", name: "Amethyst", sw: "#6d40c4" },
+  { id: "rose",     name: "Rose",     sw: "#c02a66" },
+  { id: "amber",    name: "Amber",    sw: "#b26a00" },
+  { id: "graphite", name: "Graphite", sw: "#475569" },
+];
+function currentAccent() { return document.documentElement.getAttribute("data-accent") || "indigo"; }
+function applyAccent(id) {
+  if (id && id !== "indigo") document.documentElement.setAttribute("data-accent", id);
+  else document.documentElement.removeAttribute("data-accent");
+  try { localStorage.setItem("accent", id || "indigo"); } catch (e) {}
+  const m = $("#accent-menu"); if (m) renderAccentSwatches(m);
+}
+function renderAccentSwatches(menu) {
+  const grid = menu.querySelector(".accent-grid"); if (!grid) return;
+  grid.innerHTML = "";
+  const cur = currentAccent();
+  ACCENTS.forEach((a) => {
+    const b = el("button", "accent-sw" + (a.id === cur ? " current" : ""));
+    b.type = "button"; b.style.background = a.sw; b.title = a.name; b.setAttribute("aria-label", a.name);
+    b.onclick = () => { applyAccent(a.id); closeAccentMenu(); };
+    grid.appendChild(b);
+  });
+}
+function openAccentMenu() {
+  closeAccentMenu();
+  const btn = $("#accent-toggle"); if (!btn) return;
+  const menu = el("div", "accent-menu"); menu.id = "accent-menu";
+  menu.appendChild(el("div", "accent-menu-title", "アクセント色"));
+  menu.appendChild(el("div", "accent-grid"));
+  document.body.appendChild(menu);
+  renderAccentSwatches(menu);
+  const r = btn.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+  menu.style.top = Math.max(8, r.top - menu.offsetHeight - 8) + "px";
+  setTimeout(() => document.addEventListener("click", accentOutside), 0);
+}
+function accentOutside(e) {
+  const m = $("#accent-menu"); if (!m) return;
+  if (!m.contains(e.target) && e.target.id !== "accent-toggle") closeAccentMenu();
+}
+function closeAccentMenu() {
+  const m = $("#accent-menu"); if (m) m.remove();
+  document.removeEventListener("click", accentOutside);
+}
+function toggleAccentMenu() { if ($("#accent-menu")) closeAccentMenu(); else openAccentMenu(); }
+
 // ---------- init ----------
 function init() {
   document.querySelectorAll(".tab").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
   $("#theme-toggle").onclick = toggleTheme; syncThemeButton();
+  { const at = $("#accent-toggle"); if (at) at.onclick = (e) => { e.stopPropagation(); toggleAccentMenu(); }; }
   $("#add-fab").onclick = openAdd;
   $("#af-cancel").onclick = hideForm;
   $("#af-save").onclick = saveForm;

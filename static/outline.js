@@ -87,14 +87,61 @@ async function renderDocList() {
   const list = el("div", "doc-list");
   docs.forEach((d) => {
     const it = el("div", "doc-item");
-    const left = el("div");
-    left.appendChild(el("div", "title", docLabel(d)));
+    it.dataset.id = d.id;
+    const left = el("div", "doc-main");
+    const titleEl = el("div", "title", docLabel(d));
+    left.appendChild(titleEl);
     left.appendChild(el("div", "meta", relTime(d.updated_at)));
     it.appendChild(left);
+
+    const actions = el("div", "doc-actions");
+    const renameBtn = el("button", "doc-act", "✎");
+    renameBtn.type = "button"; renameBtn.title = "名前を変更"; renameBtn.setAttribute("aria-label", "名前を変更");
+    renameBtn.onclick = (e) => { e.stopPropagation(); startRenameDoc(d, it, titleEl); };
+    const delBtn = el("button", "doc-act danger", "🗑");
+    delBtn.type = "button"; delBtn.title = "削除"; delBtn.setAttribute("aria-label", "削除");
+    delBtn.onclick = (e) => { e.stopPropagation(); deleteDocItem(d); };
+    actions.appendChild(renameBtn); actions.appendChild(delBtn);
+    it.appendChild(actions);
+
     it.onclick = () => openDoc(d.id);
     list.appendChild(it);
   });
   host.appendChild(list);
+}
+
+// inline rename inside the docs list: swap the title for an input, commit on
+// Enter/blur (PATCH /api/docs/<id>), cancel on Escape; re-render either way.
+function startRenameDoc(d, it, titleEl) {
+  if (it.querySelector(".rename-input")) return;
+  const input = el("input", "rename-input");
+  input.value = d.title || (d.is_daily ? d.daily_date : "");
+  input.placeholder = "タイトル";
+  input.onclick = (e) => e.stopPropagation();
+  titleEl.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    const v = input.value.trim();
+    if (save && v !== (d.title || "")) {
+      try { await api("/api/docs/" + d.id, { method: "PATCH", body: JSON.stringify({ title: v }) }); }
+      catch (e) { toast("名前の変更に失敗"); }
+    }
+    renderDocList();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+
+async function deleteDocItem(d) {
+  if (!confirm("「" + docLabel(d) + "」を削除しますか？この操作は取り消せません。")) return;
+  try { await api("/api/docs/" + d.id, { method: "DELETE" }); toast("削除しました"); }
+  catch (e) { toast("削除に失敗"); return; }
+  renderDocList();
 }
 
 function docLabel(d) {
