@@ -15,31 +15,48 @@
 <body>
   <div id="drop-overlay" class="drop-overlay hidden"><div>ここに落とす 📸</div></div>
 
-  <header class="app-header">
-    <div class="header-top">
-      <span class="brand">StudyDash</span>
-      <div class="header-status">
+  <button id="side-toggle" class="side-toggle" type="button" aria-label="メニュー">☰</button>
+
+  <div class="shell" id="shell">
+    <!-- LEFT: navigation -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-brand">StudyDash</div>
+      <nav class="side-nav">
+        <div class="side-label">ノート</div>
+        <button class="side-item" data-nav="daily" type="button">📅 <span>今日のノート</span></button>
+        <button class="side-item" data-nav="docs" type="button">🗂 <span>ノート一覧</span></button>
+        <button class="side-item is-soon" data-nav="search" type="button" disabled title="Phase D で有効化">🔍 <span>検索</span></button>
+
+        <div class="side-label">学習</div>
+        <button class="side-item tab active" data-tab="today" type="button">今日<span class="badge" id="badge-today"></span></button>
+        <button class="side-item tab" data-tab="assignments" type="button">課題<span class="badge" id="badge-assignments"></span></button>
+        <button class="side-item tab" data-tab="review" type="button">復習<span class="badge" id="badge-review"></span></button>
+        <button class="side-item tab" data-tab="materials" type="button">教材<span class="badge" id="badge-materials"></span></button>
+      </nav>
+      <div class="side-foot">
         <span id="analyzing" class="chip hidden" title="解析中">⏳ <span id="analyzing-n">0</span></span>
         <span id="sync-info" class="chip subtle" title="最終同期"></span>
         <span id="cost-meter" class="chip subtle" title="今月の目安"></span>
         <span id="backup-info" class="chip subtle warn hidden" title="バックアップ状態"></span>
         <button id="theme-toggle" class="chip theme-toggle" type="button" aria-label="テーマ切替">☾</button>
       </div>
-    </div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="today">今日<span class="badge" id="badge-today"></span></button>
-      <button class="tab" data-tab="assignments">課題<span class="badge" id="badge-assignments"></span></button>
-      <button class="tab" data-tab="review">復習<span class="badge" id="badge-review"></span></button>
-      <button class="tab" data-tab="materials">教材<span class="badge" id="badge-materials"></span></button>
-    </nav>
-  </header>
+    </aside>
 
-  <main id="main">
-    <section class="panel active" id="panel-today"></section>
-    <section class="panel" id="panel-assignments"></section>
-    <section class="panel" id="panel-review"></section>
-    <section class="panel" id="panel-materials"></section>
-  </main>
+    <!-- CENTER: canvas (existing tabs OR the notes outliner) -->
+    <main class="canvas" id="canvas">
+      <div class="crumbs" id="crumbs" hidden></div>
+      <div id="main">
+        <section class="panel active" id="panel-today"></section>
+        <section class="panel" id="panel-assignments"></section>
+        <section class="panel" id="panel-review"></section>
+        <section class="panel" id="panel-materials"></section>
+      </div>
+      <div id="notes-view" class="notes-view hidden"></div>
+    </main>
+
+    <!-- RIGHT: contextual panel (backlinks etc. — Phase D). Hidden in B1. -->
+    <aside class="rightbar" id="rightbar" hidden></aside>
+  </div>
 
   <button id="add-fab" class="fab" title="追加 (n)">＋ 追加</button>
 
@@ -83,5 +100,7 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='sd-core.js') }}"></script>
+  <script src="{{ url_for('static', filename='outline.js') }}"></script>
 </body>
 </html>

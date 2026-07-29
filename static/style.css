@@ -103,9 +103,10 @@ body {
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
-/* layout: mobile-first, centered, single breakpoint */
-.app-header, #main, .add-form { max-width: 640px; margin: 0 auto; }
-#main { padding: 12px 14px; }
+/* layout: the 3-zone shell owns page structure (see "Phase B1" block below);
+   #main (existing tab panels) now lives inside the centered canvas column. */
+.add-form { max-width: 640px; margin: 0 auto; }
+#main { padding: 0; }
 
 .app-header {
   position: sticky; top: 0; z-index: 20;
@@ -392,3 +393,133 @@ select, input[type=text], input[type=number], input[type=date] {
 .g-good { background: var(--good); } .g-easy { background: var(--accent); }
 
 .hidden { display: none !important; }
+
+/* ========================================================================
+   Phase B1 — 3-zone shell + outliner
+   Left sidebar (nav) · center canvas (existing tabs OR notes) · right panel.
+   The existing tab buttons moved into the sidebar as .side-item.tab — app.js
+   still toggles their legacy .active class (harmless: .side-item has no border),
+   while the visible highlight is .side-item.current, driven by sd-core.js.
+   ======================================================================== */
+.shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 100vh;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+.shell.has-right { grid-template-columns: 240px minmax(0, 1fr) 300px; }
+
+.sidebar {
+  position: sticky; top: 0; align-self: start; height: 100vh;
+  display: flex; flex-direction: column;
+  background: var(--surface); border-right: 1px solid var(--border);
+  padding: 16px 10px calc(10px + env(safe-area-inset-bottom));
+}
+.side-brand { font-weight: 700; font-size: 18px; letter-spacing: .02em; padding: 4px 8px 10px; }
+.side-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
+.side-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em; margin: 14px 8px 4px;
+}
+.side-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left; min-height: 40px;
+  padding: 8px 10px; border: none; border-radius: var(--r-sm);
+  background: none; color: var(--text); font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+.side-item:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.side-item.current { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.side-item[disabled], .side-item.is-soon { opacity: .4; cursor: default; }
+.side-item[disabled]:hover, .side-item.is-soon:hover { background: none; }
+.side-foot {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding-top: 10px; margin-top: 4px; border-top: 1px solid var(--border);
+}
+.side-toggle {
+  display: none; align-items: center; justify-content: center;
+  position: fixed; top: 8px; left: 8px; z-index: 45; width: 40px; height: 40px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font-size: 18px; cursor: pointer;
+  box-shadow: var(--sh-card);
+}
+
+.canvas { min-width: 0; padding: 20px 24px 96px; }
+.canvas > #main,
+.canvas > .notes-view,
+.canvas > .crumbs { max-width: 760px; margin-left: auto; margin-right: auto; }
+
+.rightbar { border-left: 1px solid var(--border); background: var(--surface); padding: 16px 14px; }
+
+/* breadcrumb */
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 12px; min-height: 22px; }
+.crumbs button, .crumbs span { background: none; border: none; color: var(--muted); font: inherit; padding: 2px 4px; border-radius: 6px; }
+.crumbs button { cursor: pointer; }
+.crumbs button:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.crumbs .sep { opacity: .5; }
+
+/* notes: docs list */
+.notes-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.doc-list { display: flex; flex-direction: column; gap: 8px; }
+.doc-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); cursor: pointer;
+}
+.doc-item:hover { border-color: var(--accent); box-shadow: var(--sh-card); }
+.doc-item .title { font-weight: 600; }
+.doc-item .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* notes: doc title + outline tree */
+.doc-title {
+  font-size: 26px; font-weight: 800; line-height: 1.3;
+  border: none; background: none; color: var(--text);
+  width: 100%; padding: 2px 2px 4px; margin-bottom: 6px;
+}
+.doc-title:focus { outline: none; }
+.doc-title::placeholder { color: var(--muted); opacity: .5; }
+
+.rem-tree { padding-bottom: 40vh; }               /* room to click-focus below the last rem */
+.rem-node { }
+.rem-children { margin-left: 22px; }
+.rem-row { display: flex; align-items: flex-start; gap: 2px; position: relative; }
+.rem-handle {
+  flex: none; width: 16px; text-align: center; line-height: 1.7;
+  color: var(--muted); font-size: 12px; cursor: grab; user-select: none; opacity: 0;
+}
+.rem-row:hover > .rem-handle { opacity: .45; }
+.rem-caret {
+  flex: none; width: 16px; text-align: center; line-height: 1.7;
+  color: var(--muted); font-size: 11px; cursor: pointer; user-select: none;
+}
+.rem-caret.leaf { visibility: hidden; cursor: default; }
+.rem-bullet { flex: none; width: 14px; text-align: center; line-height: 1.7; color: var(--muted); user-select: none; }
+.rem-text {
+  flex: 1; min-width: 0; line-height: 1.7; padding: 1px 4px;
+  border-radius: 4px; white-space: pre-wrap; word-break: break-word; outline: none;
+}
+.rem-text:focus { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.rem-text.empty::before { content: attr(data-ph); color: var(--muted); opacity: .5; pointer-events: none; }
+.rem-node.done > .rem-row > .rem-text { color: var(--muted); text-decoration: line-through; }
+/* drag drop indicator line */
+.rem-row.drop-before::before, .rem-row.drop-after::after {
+  content: ""; position: absolute; left: 30px; right: 0; height: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+.rem-row.drop-before::before { top: -1px; }
+.rem-row.drop-after::after { bottom: -1px; }
+
+/* mobile: collapse the sidebar into a slide-over drawer */
+@media (max-width: 860px) {
+  .shell, .shell.has-right { grid-template-columns: 1fr; }
+  .sidebar {
+    position: fixed; left: 0; top: 0; z-index: 50; width: 264px; height: 100vh;
+    transform: translateX(-100%); transition: transform var(--ease);
+    box-shadow: var(--sh-pop);
+  }
+  .sidebar.open { transform: none; }
+  .side-toggle { display: inline-flex; }
+  .rightbar { display: none; }
+  .canvas { padding: 56px 16px 96px; }
+}

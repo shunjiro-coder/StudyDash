@@ -55,6 +55,30 @@ def create_backup():
     return dest
 
 
+def pre_migration_backup(phase):
+    """One WAL-safe snapshot before a phase's first schema migration (guardrail 4).
+
+    Distinct from the daily backups/ generations: written as study.db.bak.<phase>
+    right next to the live DB so it's obvious what it protects and trivial to
+    restore by hand. Uses the online .backup() API (never a file copy — a copy
+    could tear a live WAL). Returns the path, or None if there's no DB to protect."""
+    if not os.path.exists(db.DB_PATH):
+        return None
+    dest = f"{db.DB_PATH}.bak.{phase}"
+    src = sqlite3.connect(db.DB_PATH, timeout=5.0)
+    try:
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    print(f"[backup] pre-migration snapshot: {dest}")
+    return dest
+
+
 def _backups():
     return sorted(glob.glob(os.path.join(BACKUP_DIR, f"{PREFIX}*{SUFFIX}")))
 

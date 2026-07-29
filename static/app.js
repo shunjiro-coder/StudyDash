@@ -776,11 +776,16 @@ function init() {
   $("#af-due-date").onchange = () => setDueChip("date");
   document.querySelectorAll("#af-minutes button").forEach((b) => b.onclick = () => setMinChip(Number(b.dataset.min)));
   document.addEventListener("keydown", (e) => {
-    const typing = /input|select|textarea/i.test(document.activeElement.tagName);
-    if (e.key === "n" && !typing && $("#add-form").classList.contains("hidden")) { e.preventDefault(); openAdd(); }
+    // "typing" now also covers contenteditable (the B1 notes rem blocks are DIVs),
+    // else global shortcuts would hijack note typing. notesMode gates study
+    // shortcuts so a live review session can't grade cards while editing a note.
+    const ae = document.activeElement;
+    const typing = !!ae && (/input|select|textarea/i.test(ae.tagName) || ae.isContentEditable);
+    const notesMode = typeof SD !== "undefined" && SD.mode === "notes";
+    if (e.key === "n" && !typing && !notesMode && $("#add-form").classList.contains("hidden")) { e.preventDefault(); openAdd(); }
     if (e.key === "Escape") hideForm();
     // review shortcuts (keyboard is the secondary path; touch is primary)
-    if (S.tab === "review" && !typing && S.review.queue.length && S.review.idx < S.review.queue.length) {
+    if (S.tab === "review" && !typing && !notesMode && S.review.queue.length && S.review.idx < S.review.queue.length) {
       if (!S.review.revealed && (e.key === " " || e.key === "Enter")) { e.preventDefault(); S.review.revealed = true; renderReview(); }
       else if (S.review.revealed) {
         if (e.key === "1") grade("again");

@@ -19,6 +19,7 @@ import calendar_export
 import db
 import generate  # noqa: F401 — registers the 'generate' worker handler at import
 import ingest  # noqa: F401 — registers the 'ingest' worker handler at import
+import notes
 import srs
 import worker
 
@@ -72,6 +73,12 @@ def _set_cookie(resp):
     if request.environ.get("_sd_set_cookie"):
         resp.set_cookie("sdkey", SHARE_TOKEN, httponly=True, samesite="Lax")
     return resp
+
+
+# Notes/outliner API (Phase B1). Registered at import (not in bootstrap()) so the
+# test client, which never calls bootstrap(), still sees these routes. The app-wide
+# before_request token guard + JSON error handlers apply to it automatically.
+app.register_blueprint(notes.notes_bp)
 
 
 # Serialization lives in db.py (shared with priority.py). Send raw UTC ISO;

@@ -349,7 +349,99 @@ def _ensure_column(conn, table, column, decl):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+# --------------------------------------------------------------------------
+# Migration ledger — additive, idempotent, NON-transactional (plan S1)
+# --------------------------------------------------------------------------
+# Python 3.9's sqlite3 auto-commits before DDL and executescript() runs its own
+# COMMITs, so a whole run can NOT be one transaction. Instead each step is written
+# idempotently (IF NOT EXISTS / _ensure_column) and recorded in schema_migrations
+# only AFTER it applies — a crash mid-run re-runs cleanly from the first unrecorded
+# step (already-applied idempotent DDL is a harmless no-op). Before a phase's first
+# unapplied step — and only when the DB already held user data — a WAL-safe .bak is
+# taken so a bad migration can never lose it (guardrail 4 / plan S3).
+_LEDGER_DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    TEXT PRIMARY KEY,
+    phase      TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
+"""
+
+# Phase B1: notes/outliner storage. docs -- rems (a fractional-indexed outline).
+# All-additive: no existing table is touched. daily_date is a LOCAL calendar-day
+# label ('YYYY-MM-DD'), NOT a D-4 UTC stamp (it names "today's note" for a human).
+_B1_DOCS_REMS = """
+CREATE TABLE IF NOT EXISTS docs (
+    id         INTEGER PRIMARY KEY,
+    title      TEXT NOT NULL DEFAULT '',
+    course_id  INTEGER REFERENCES courses(id) ON DELETE SET NULL,
+    is_daily   INTEGER NOT NULL DEFAULT 0,
+    daily_date TEXT,
+    archived   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_docs_daily ON docs(daily_date) WHERE is_daily=1;
+
+CREATE TABLE IF NOT EXISTS rems (
+    id         INTEGER PRIMARY KEY,
+    doc_id     INTEGER NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+    parent_id  INTEGER REFERENCES rems(id) ON DELETE CASCADE,
+    position   REAL NOT NULL,
+    text       TEXT NOT NULL DEFAULT '',
+    rem_type   TEXT NOT NULL DEFAULT 'bullet',
+    props_json TEXT,
+    collapsed  INTEGER NOT NULL DEFAULT 0,
+    done       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rems_doc ON rems(doc_id, parent_id, position);
+"""
+
+
+def _migrate_b1(conn):
+    conn.executescript(_B1_DOCS_REMS)
+
+
+MIGRATIONS = [
+    ("b1_docs_rems", "B", _migrate_b1),
+]
+
+
+def apply_migrations(steps, backup_existing=False):
+    """Apply each (version, phase, fn) exactly once, recording it after success."""
+    conn = get_conn()
+    with _write_lock:
+        conn.executescript(_LEDGER_DDL)
+        conn.commit()
+    applied = {r["version"] for r in
+               conn.execute("SELECT version FROM schema_migrations")}
+    backed_up = set()
+    for version, phase, fn in steps:
+        if version in applied:
+            continue
+        if backup_existing and phase not in backed_up:
+            try:
+                import backup
+                backup.pre_migration_backup(phase)
+            except Exception as e:  # a backup hiccup must not block the migration
+                print(f"[migrate] pre-migration backup ({phase}) failed: {e}")
+            backed_up.add(phase)
+        with _write_lock:
+            fn(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, phase, applied_at) "
+                "VALUES (?,?,?)", (version, phase, now_utc_iso()))
+            conn.commit()
+
+
 def init():
+    # Whether the DB already held user data BEFORE we touch it: a phase's first
+    # migration backs up existing data, but a brand-new / test DB does not (nothing
+    # to protect, and tests stay side-effect-free). Checked before get_conn(),
+    # which would otherwise create the file.
+    preexisting = os.path.exists(DB_PATH)
     conn = get_conn()
     with _write_lock:
         conn.executescript(SCHEMA)
@@ -357,6 +449,7 @@ def init():
         _ensure_column(conn, "materials", "attempts",
                        "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+    apply_migrations(MIGRATIONS, backup_existing=preexisting)
 
 
 # --------------------------------------------------------------------------

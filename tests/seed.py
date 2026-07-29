@@ -75,3 +75,23 @@ def make_study_guide(course_id, content_md="# まとめ", scope_desc="範囲"):
         "INSERT INTO study_guides (course_id, scope_desc, content_md, created_at) "
         "VALUES (?,?,?,?)",
         (course_id, scope_desc, content_md, db.now_utc_iso()))
+
+
+# --- Phase B1: notes/outliner ---------------------------------------------
+def make_doc(title="ノート", course_id=None, is_daily=0, daily_date=None,
+             archived=0):
+    now = db.now_utc_iso()
+    return db.write(
+        """INSERT INTO docs
+           (title, course_id, is_daily, daily_date, archived, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (title, course_id, is_daily, daily_date, archived, now, now))
+
+
+def make_rem(doc_id, text="", parent_id=None, position=1.0, rem_type="bullet"):
+    now = db.now_utc_iso()
+    return db.write(
+        """INSERT INTO rems
+           (doc_id, parent_id, position, text, rem_type, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (doc_id, parent_id, position, text, rem_type, now, now))
