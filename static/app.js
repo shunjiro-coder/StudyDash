@@ -464,6 +464,10 @@ function renderCard(p) {
     } else if (!isCloze) {
       face.appendChild(el("div", "review-back", card.back));
     }
+    // compute shows the answer (back) above; add the worked steps if provided.
+    if (ct === "compute" && Array.isArray(mj.steps) && mj.steps.length) {
+      const ol = el("ol", "rc-steps"); mj.steps.forEach((s) => ol.appendChild(el("li", "", s))); face.appendChild(ol);
+    }
     if (mj.rubric) { const rb = el("div", "rc-rubric"); rb.appendChild(el("div", "rc-rubric-t", "自己採点の観点")); rb.appendChild(el("div", "", mj.rubric)); face.appendChild(rb); }
     if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; img.alt = ""; img.onerror = () => img.remove(); face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
@@ -899,30 +903,18 @@ async function openMaterial(mid, highlight) {
   // E4 — manually add a review card sourced from this material. The optional
   // 引用 is stored as source_loc {quote} so the card points back at the file
   // (a first, quote-anchored cut; richer offsets/regions come later).
+  // Phase H3: add cards from this material — 🤖 auto (analyze -> propose, with an
+  // optional range + free-text instruction; cards enter the G1 gate) or ✎ manual.
   const addWrap = el("div", "mat-addcard");
-  const addBtn = el("button", "btn small ghost", "＋ この教材から復習カードを追加");
-  addWrap.appendChild(addBtn);
-  addBtn.onclick = () => {
-    if (addWrap.querySelector(".ac-form")) return;
-    const f = el("div", "ac-form");
-    const front = el("input", "ac-in"); front.placeholder = "表（問い）";
-    const back = el("input", "ac-in"); back.placeholder = "裏（答え）";
-    const quote = el("input", "ac-in"); quote.placeholder = "引用（任意：ファイル中の該当箇所）";
-    const save = el("button", "btn small primary", "追加");
-    save.onclick = async () => {
-      const fr = front.value.trim(), bk = back.value.trim();
-      if (!fr || !bk) { toast("表と裏を入力してください"); return; }
-      const q = quote.value.trim();
-      try {
-        await api(`/api/materials/${m.id}/card`, { method: "POST", body: JSON.stringify({
-          front: fr, back: bk, source_quote: q || null, source_loc: q ? { quote: q } : null }) });
-        toast("カードを追加しました", true); ov.remove(); openMaterial(m.id);
-      } catch (e) { toast("追加に失敗: " + e.message); }
-    };
-    [front, back, quote, save].forEach((x) => f.appendChild(x));
-    addWrap.appendChild(f);
-    front.focus();
-  };
+  const btnRow = el("div", "add-row");
+  const smartBtn = el("button", "btn small primary", "🤖 この教材から自動でカードを作る");
+  const manualBtn = el("button", "btn small ghost", "✎ 手動で1枚追加");
+  btnRow.appendChild(smartBtn); btnRow.appendChild(manualBtn);
+  addWrap.appendChild(btnRow);
+  const addBody = el("div", "ac-body");
+  addWrap.appendChild(addBody);
+  smartBtn.onclick = () => openSmartAdd(m, ov, addBody, trPre);
+  manualBtn.onclick = () => openManualAdd(m, ov, addBody);
   box.appendChild(addWrap);
 
   const foot = el("div", "add-row end");
@@ -1240,6 +1232,89 @@ function openSummaryPanel(m, ov, host) {
   actions.appendChild(gen); form.appendChild(actions); form.appendChild(note);
   panel.appendChild(form);
   host.appendChild(panel);
+}
+
+// ---- H3: smart add — analyze this material and PROPOSE cards (G1 gate), with an
+// optional range + free-text steer. Reopens the material so the proposal panel
+// shows the drafts for confirm/pick/steer. ----
+function openSmartAdd(m, ov, host, trPre) {
+  host.innerHTML = "";
+  const panel = el("div", "sm-panel");
+  panel.appendChild(el("div", "sm-panel-h", "🤖 自動でカードを作る"));
+  panel.appendChild(el("div", "sm-panel-sub", "教材を解析して復習カードの案を作ります。範囲や作り方を指定できます（承認するまで復習には入りません）。"));
+
+  panel.appendChild(el("div", "sm-flabel", "範囲（どこから どこまで）"));
+  const scope = el("input", "sm-in");
+  scope.placeholder = "例：第3章／pp.10-14／光合成の部分だけ（空欄＝全体）";
+  panel.appendChild(scope);
+  const rangeRow = el("div", "sm-actions");
+  const useSel = el("button", "btn small ghost", "文字起こしで選択した部分を使う");
+  useSel.onclick = () => {
+    const s = window.getSelection ? window.getSelection() : null;
+    const txt = (s && s.toString() || "").trim();
+    if (!txt) { toast("下の「文字起こし」の中で範囲をドラッグ選択してから押してください"); return; }
+    // require BOTH ends of the range inside the transcription, so a drag that
+    // starts or ends outside it can't slip non-transcription text into the scope.
+    if (trPre && s.anchorNode && s.focusNode &&
+        trPre.contains(s.anchorNode) && trPre.contains(s.focusNode)) {
+      scope.value = txt.length > 120 ? txt.slice(0, 120) + "…" : txt;
+      toast("選択範囲を設定しました", true);
+    } else { toast("「文字起こし」の中だけを選択してください"); }
+  };
+  const whole = el("button", "btn small ghost", "全体にする");
+  whole.onclick = () => { scope.value = ""; toast("範囲を全体にしました"); };
+  rangeRow.appendChild(useSel); rangeRow.appendChild(whole);
+  panel.appendChild(rangeRow);
+
+  panel.appendChild(el("div", "sm-flabel", "作り方の指示（任意）"));
+  const instr = el("textarea", "sm-in"); instr.rows = 2;
+  instr.placeholder = "例：計算練習を多めに／用語中心で／英文の穴埋めを作って など";
+  panel.appendChild(instr);
+
+  const actions = el("div", "sm-actions");
+  const gen = el("button", "btn small primary", "この内容で作る");
+  const note = el("div", "sm-gennote hidden", "解析中…（20〜60秒ほどかかることがあります）");
+  gen.onclick = async () => {
+    gen.disabled = true; note.classList.remove("hidden");
+    try {
+      const r = await api(`/api/materials/${m.id}/draft`, {
+        method: "POST",
+        body: JSON.stringify({ scope: scope.value.trim() || null, instruction: instr.value.trim() || null }),
+      });
+      if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
+      if (!r.added) { toast("新しいカードは作られませんでした（範囲や指示を変えて試してください）"); return; }
+      const tp = (r.topics && r.topics.length) ? "「" + r.topics.join("・") + "」" : "";
+      toast(`${tp}の内容で${r.added}項目を用意しました。下で確認して承認してください。`, true);
+      ov.remove(); openMaterial(m.id);        // reopen -> proposal gate shows the drafts
+    } catch (e) { toast("生成に失敗: " + e.message); }
+    finally { gen.disabled = false; note.classList.add("hidden"); }
+  };
+  actions.appendChild(gen); panel.appendChild(actions); panel.appendChild(note);
+  host.appendChild(panel);
+  scope.focus();
+}
+
+// ---- manual single-card add (front/back + optional quote) ----
+function openManualAdd(m, ov, host) {
+  host.innerHTML = "";
+  const f = el("div", "ac-form");
+  const front = el("input", "ac-in"); front.placeholder = "表（問い）";
+  const back = el("input", "ac-in"); back.placeholder = "裏（答え）";
+  const quote = el("input", "ac-in"); quote.placeholder = "引用（任意：ファイル中の該当箇所）";
+  const save = el("button", "btn small primary", "追加");
+  save.onclick = async () => {
+    const fr = front.value.trim(), bk = back.value.trim();
+    if (!fr || !bk) { toast("表と裏を入力してください"); return; }
+    const q = quote.value.trim();
+    try {
+      await api(`/api/materials/${m.id}/card`, { method: "POST", body: JSON.stringify({
+        front: fr, back: bk, source_quote: q || null, source_loc: q ? { quote: q } : null }) });
+      toast("カードを追加しました", true); ov.remove(); openMaterial(m.id);
+    } catch (e) { toast("追加に失敗: " + e.message); }
+  };
+  [front, back, quote, save].forEach((x) => f.appendChild(x));
+  host.appendChild(f);
+  front.focus();
 }
 
 // small radio-group helper

@@ -597,6 +597,27 @@ def api_material_summary(mid):
         "id": g["id"], "scope_desc": g["scope_desc"], "content_md": g["content_md"]}})
 
 
+@app.route("/api/materials/<int:mid>/draft", methods=["POST"])
+def api_material_draft(mid):
+    """Phase H3: auto-generate review cards from this material with an optional
+    free-text instruction + range. Cards enter as PROPOSED (G1 gate) so nothing is
+    studied until the user confirms. Synchronous single AI call."""
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    instruction = (data.get("instruction") or "").strip() or None
+    scope = (data.get("scope") or "").strip() or None
+    try:
+        res = generate.generate_draft(mid, instruction, scope)
+    except generate.ai.ClaudeError as e:
+        return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "message": f"生成に失敗: {str(e)[:200]}"}), 200
+    if not res:
+        abort(404)
+    return jsonify({"ok": True, **res})
+
+
 @app.route("/api/materials/<int:mid>/retry", methods=["POST"])
 def api_material_retry(mid):
     m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))

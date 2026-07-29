@@ -76,6 +76,45 @@ def _generate_with_retry(prompt, model):
     raise ValueError(last_raw[:RAW_PREVIEW] or "empty")
 
 
+# H1: modality types the generator may stamp + how each renders (see app.js
+# renderCard). media_json is EXCLUDED from the D-5 content_hash (H0), so richer
+# modalities never disturb dedup/regenerate.
+_PRODUCE_TYPES = {"produce", "explain", "interpret", "predict", "compare", "elaborate"}
+_STEP_TYPES = {"steps", "worked", "compute"}   # render an ordered step list
+VALID_CARD_TYPES = {"qa", "term", "cloze", "list"} | _PRODUCE_TYPES | _STEP_TYPES
+
+
+def _clean_card_type(ct):
+    ct = (ct or "").strip().lower()
+    return ct if ct in VALID_CARD_TYPES else "qa"
+
+
+def _clean_media_json(card_type, mj):
+    """Keep only the render structure a card_type actually uses (steps / items /
+    rubric); drop everything else so a stray or huge blob can't slip in. Returns a
+    JSON string or None. NEVER enters the content_hash — front/back are identity."""
+    if not isinstance(mj, dict):
+        return None
+    out = {}
+    if card_type in _STEP_TYPES:
+        raw = mj.get("steps")
+        if isinstance(raw, list):     # a string here would iterate per-character
+            steps = [str(s).strip() for s in raw if str(s).strip()]
+            if steps:
+                out["steps"] = steps[:20]
+    if card_type == "list":
+        raw = mj.get("items")
+        if isinstance(raw, list):
+            items = [str(s).strip() for s in raw if str(s).strip()]
+            if items:
+                out["items"] = items[:30]
+    if card_type in _PRODUCE_TYPES:
+        rub = mj.get("rubric")
+        if isinstance(rub, str) and rub.strip():
+            out["rubric"] = rub.strip()[:600]
+    return json.dumps(out, ensure_ascii=False) if out else None
+
+
 def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
     now = db.now_utc_iso()
     added = 0
@@ -85,6 +124,8 @@ def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
         if not front or not back:
             continue
         conf = c.get("confidence") if c.get("confidence") in ("high", "low") else None
+        ctype = _clean_card_type(c.get("card_type"))
+        media_json = _clean_media_json(ctype, c.get("media_json"))
         # E5: a verbatim quote lets the viewer show WHERE this card came from.
         sq = (c.get("source_quote") or "").strip() or None
         loc_json = (json.dumps(db.locate(sq, extracted_text), ensure_ascii=False)
@@ -93,19 +134,25 @@ def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
         cur = db.write_returning(
             """INSERT OR IGNORE INTO cards
                (course_id, material_id, card_type, front, back, topic, origin,
-                confidence, source_quote, source_loc, content_hash, state,
+                confidence, source_quote, source_loc, media_json, content_hash, state,
                 repetitions, current_interval, current_ease, created_at)
-               VALUES (?,?,?,?,?,?, 'generated', ?,?,?,?, 'proposed', 0, 0, 2.5, ?)""",
-            (course_id, material_id, c.get("card_type") or "qa", front, back,
-             c.get("topic"), conf, sq, loc_json, ch, now))
+               VALUES (?,?,?,?,?,?, 'generated', ?,?,?,?,?, 'proposed', 0, 0, 2.5, ?)""",
+            (course_id, material_id, ctype, front, back,
+             c.get("topic"), conf, sq, loc_json, media_json, ch, now))
         if cur.rowcount:
             added += 1
-        elif sq:
-            # E5 backfill: card already exists (D-5 dedup). Refresh ONLY its
-            # source location — never front/back/SRS state (keeps review history).
+            continue
+        # Card already exists (D-5 dedup). Enrich WITHOUT touching front/back/SRS
+        # state (keeps review history): E5 refreshes the source location; H1
+        # backfills modality structure only when the card has none yet.
+        if sq:
             db.write("UPDATE cards SET source_quote=?, source_loc=? "
                      "WHERE course_id IS ? AND content_hash=?",
                      (sq, loc_json, course_id, ch))
+        if media_json:
+            db.write("UPDATE cards SET media_json=COALESCE(media_json, ?) "
+                     "WHERE course_id IS ? AND content_hash=?",
+                     (media_json, course_id, ch))
     return added
 
 
@@ -153,20 +200,27 @@ def generate_for_material(material_id):
                  (f"生成結果を読めませんでした: {str(e)[:RAW_PREVIEW]}", material_id))
         return 0, "parse error"
 
-    guide = obj.get("study_guide_md")
-    if guide:
-        scope = None
-        try:
-            scope = json.loads(m["extracted_json"] or "{}").get("summary")
-        except (TypeError, ValueError):
-            pass
-        db.write(
-            "INSERT INTO study_guides (course_id, scope_desc, content_md, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (course_id, scope, guide, db.now_utc_iso()))
-
-    added = _insert_generated_cards(course_id, material_id,
-                                    obj.get("cards") or [], text)
+    # Persisting the guide + cards is wrapped so a malformed payload can never
+    # leave the material stuck in 'generating' (the worker swallows exceptions);
+    # any failure here marks it 'failed' with a message the UI can surface.
+    try:
+        guide = obj.get("study_guide_md")
+        if guide:
+            scope = None
+            try:
+                scope = json.loads(m["extracted_json"] or "{}").get("summary")
+            except (TypeError, ValueError):
+                pass
+            db.write(
+                "INSERT INTO study_guides (course_id, scope_desc, content_md, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (course_id, scope, guide, db.now_utc_iso()))
+        added = _insert_generated_cards(course_id, material_id,
+                                        obj.get("cards") or [], text)
+    except Exception as e:
+        db.write("UPDATE materials SET status='failed', error_message=? WHERE id=?",
+                 (f"カード保存に失敗しました: {str(e)[:RAW_PREVIEW]}", material_id))
+        return 0, "insert error"
     db.write("UPDATE materials SET status='done' WHERE id=?", (material_id,))
     return added, "ok"
 
@@ -323,6 +377,44 @@ def generate_summary(material_id, scope=None, lang=None):
         "content_md, created_at) VALUES (?,?,?,?,?)",
         (m["course_id"], material_id, scope, md, db.now_utc_iso()))
     return db.query_one("SELECT * FROM study_guides WHERE id=?", (gid,))
+
+
+def generate_draft(material_id, instruction=None, scope=None):
+    """Phase H3: on-demand 'make review cards from this material' with an optional
+    free-text instruction and range. Reuses the subject prompt (so cards get H1
+    modalities) plus a top-priority directive block for the steer/range, and inserts
+    the cards as PROPOSED — nothing is studied until the user confirms (G1 gate).
+    Returns {added, topics}. Raises ValueError on empty text / no course / parse."""
+    m, text = _material_text_or_raise(material_id)
+    if not m:
+        return None
+    course_id = m["course_id"]
+    if not course_id:
+        raise ValueError("この教材にはコース（科目）が紐づいていません。先に科目を割り当ててください。")
+    course = db.query_one("SELECT * FROM courses WHERE id=?", (course_id,))
+    stype = course["subject_type"] if course else "memo"
+    if stype == "other":                      # tracker-only course -> memo style on demand
+        stype = "memo"
+    instruction = (instruction or "").strip() or None
+    scope = (scope or "").strip() or None
+    with open(PROMPTS.get(stype, PROMPTS["memo"]), encoding="utf-8") as f:
+        prompt = f.read().format(text=text, lang_line=_lang_line())
+    extra = []
+    if scope:
+        extra.append(f"範囲を次に限定する（この部分だけからカードを作る）：{scope}")
+    if instruction:
+        extra.append(f"利用者の指示（最優先で反映する）：{instruction}")
+    if extra:
+        prompt += "\n\n【重要な追加指示（最優先で従う）】\n- " + "\n- ".join(extra)
+    obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
+    cards = obj.get("cards") or []
+    added = _insert_generated_cards(course_id, material_id, cards, text)
+    topics = []
+    for c in cards:
+        t = (c.get("topic") or "").strip()
+        if t and t not in topics:
+            topics.append(t)
+    return {"added": added, "topics": topics[:8]}
 
 
 worker.register("generate", generate_handler)

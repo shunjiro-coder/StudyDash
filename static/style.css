@@ -916,3 +916,7 @@ textarea.rc-input { min-height: 84px; resize: vertical; line-height: 1.6; }
 .sm-lang-lb { font-size: .78rem; color: var(--muted); font-weight: 600; }
 .sm-lang-sel { padding: 3px var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg); color: var(--text); font-size: .82rem; }
+
+/* Phase H3 — smart add-card body */
+.ac-body:empty { display: none; }
+.ac-body { margin-top: var(--sp-2); }
