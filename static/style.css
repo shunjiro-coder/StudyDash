@@ -127,7 +127,8 @@ body {
     "Hiragino Sans", "Yu Gothic", "Segoe UI", Roboto, sans-serif;
   font-size: 16px; line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  padding-bottom: 96px;
+  /* no bottom padding: the left-sidebar shell replaced the old bottom tab bar,
+     so this was pure scrollable dead space. FAB clearance lives on .canvas. */
 }
 /* small, fast, eased motion on interactive surfaces (nothing bouncy) */
 .btn, .tab, .chip, .a-check, .a-pin, .seg button, .grade-btn, .reveal-btn,
@@ -425,6 +426,15 @@ select, input[type=text], input[type=number], input[type=date] {
 .guide-md { white-space: pre-wrap; word-break: break-word; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 13px; line-height: 1.6; font-family: inherit; }
 .extract-det { margin-top: 10px; }
 .extract-det summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+
+/* ===== Phase E5: transcription panel + source-location highlight ===== */
+.mat-transcript { margin-top: 12px; }
+.mat-transcript > summary { color: var(--ink-2); font-weight: 600; font-size: 13px; }
+.tr-pre { max-height: 320px; overflow: auto; margin-top: 8px; }
+.tr-hit { background: color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 3px; padding: 0 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); scroll-margin: 40px; }
+.card-preview.locatable { cursor: pointer; transition: border-color .12s ease; }
+.card-preview.locatable:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.cp-locate { margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--accent); }
 .err-box { background: var(--danger-bg); border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
 .err-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
 /* E2 — failure explainer: cause + rough odds + how-to-succeed */

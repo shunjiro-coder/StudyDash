@@ -174,6 +174,52 @@ def content_hash(front, back):
 
 
 # --------------------------------------------------------------------------
+# E5  source-location: find a verbatim quote inside a transcription so the
+# viewer can highlight WHERE a card came from.
+# --------------------------------------------------------------------------
+def locate(quote, text):
+    """Find `quote` within `text`. Matching is NFKC + whitespace-tolerant, but
+    char_start/char_end index into the ORIGINAL `text` (what the UI renders);
+    both are null when the quote can't be found (the quote is still returned)."""
+    q = (quote or "").strip()
+    loc = {"quote": q, "char_start": None, "char_end": None}
+    if not q or not text:
+        return loc
+    # normalized copy of `text` + a map from each normalized char back to its
+    # original index (NFKC can expand one original char into several).
+    norm_chars, idx_map = [], []
+    prev_space = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not prev_space:
+                norm_chars.append(" ")
+                idx_map.append(i)
+                prev_space = True
+            continue
+        prev_space = False
+        for c in unicodedata.normalize("NFKC", ch):
+            norm_chars.append(c)
+            idx_map.append(i)
+    ntext = "".join(norm_chars)
+    nquote = _WS.sub(" ", unicodedata.normalize("NFKC", q)).strip()
+    if not nquote:
+        return loc
+    pos = ntext.find(nquote)
+    match_len = len(nquote)
+    if pos < 0:  # relax: match a leading slice (tail drift / trailing ellipsis)
+        head = nquote[:12]
+        if len(head) < 6:
+            return loc
+        pos = ntext.find(head)
+        if pos < 0:
+            return loc
+        match_len = len(head)
+    loc["char_start"] = idx_map[pos]
+    loc["char_end"] = idx_map[pos + match_len - 1] + 1
+    return loc
+
+
+# --------------------------------------------------------------------------
 # Settings + subject-type inference (shared)
 # --------------------------------------------------------------------------
 def load_settings():

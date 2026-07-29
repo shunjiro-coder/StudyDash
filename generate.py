@@ -44,7 +44,7 @@ def _generate_with_retry(prompt, model):
     raise ValueError(last_raw[:RAW_PREVIEW] or "empty")
 
 
-def _insert_generated_cards(course_id, material_id, cards):
+def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
     now = db.now_utc_iso()
     added = 0
     for c in cards:
@@ -53,15 +53,27 @@ def _insert_generated_cards(course_id, material_id, cards):
         if not front or not back:
             continue
         conf = c.get("confidence") if c.get("confidence") in ("high", "low") else None
+        # E5: a verbatim quote lets the viewer show WHERE this card came from.
+        sq = (c.get("source_quote") or "").strip() or None
+        loc_json = (json.dumps(db.locate(sq, extracted_text), ensure_ascii=False)
+                    if sq else None)
+        ch = db.content_hash(front, back)
         cur = db.write_returning(
             """INSERT OR IGNORE INTO cards
                (course_id, material_id, card_type, front, back, topic, origin,
-                confidence, content_hash, state, repetitions, current_interval,
-                current_ease, created_at)
-               VALUES (?,?,?,?,?,?, 'generated', ?, ?, 'new', 0, 0, 2.5, ?)""",
+                confidence, source_quote, source_loc, content_hash, state,
+                repetitions, current_interval, current_ease, created_at)
+               VALUES (?,?,?,?,?,?, 'generated', ?,?,?,?, 'new', 0, 0, 2.5, ?)""",
             (course_id, material_id, c.get("card_type") or "qa", front, back,
-             c.get("topic"), conf, db.content_hash(front, back), now))
-        added += cur.rowcount  # 0 if the content_hash already existed
+             c.get("topic"), conf, sq, loc_json, ch, now))
+        if cur.rowcount:
+            added += 1
+        elif sq:
+            # E5 backfill: card already exists (D-5 dedup). Refresh ONLY its
+            # source location — never front/back/SRS state (keeps review history).
+            db.write("UPDATE cards SET source_quote=?, source_loc=? "
+                     "WHERE course_id IS ? AND content_hash=?",
+                     (sq, loc_json, course_id, ch))
     return added
 
 
@@ -121,7 +133,8 @@ def generate_for_material(material_id):
             "VALUES (?, ?, ?, ?)",
             (course_id, scope, guide, db.now_utc_iso()))
 
-    added = _insert_generated_cards(course_id, material_id, obj.get("cards") or [])
+    added = _insert_generated_cards(course_id, material_id,
+                                    obj.get("cards") or [], text)
     db.write("UPDATE materials SET status='done' WHERE id=?", (material_id,))
     return added, "ok"
 

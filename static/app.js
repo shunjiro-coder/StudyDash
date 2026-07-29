@@ -414,6 +414,12 @@ function renderCard(p) {
     face.appendChild(el("div", "review-back", card.back));
     if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
+    // E5: jump to WHERE this card came from (opens the material at the quote).
+    if (card.material_id && (card.source_loc || card.source_quote)) {
+      const src = el("button", "btn small ghost", "📍 出典を見る");
+      src.onclick = (e) => { e.stopPropagation(); openMaterial(card.material_id, card.source_loc || card.source_quote); };
+      face.appendChild(src);
+    }
     const bad = el("button", "btn small ghost", "この問題おかしい");
     bad.onclick = async (e) => { e.stopPropagation(); await api("/api/review/report", { method: "POST", body: JSON.stringify({ card_id: card.id, verdict: "wrong" }) }); toast("報告しました"); };
     face.appendChild(bad);
@@ -622,7 +628,7 @@ function matTile(m) {
   return t;
 }
 
-async function openMaterial(mid) {
+async function openMaterial(mid, highlight) {
   let m;
   try { m = await api(`/api/materials/${mid}`); } catch (e) { toast("読み込み失敗"); return; }
   const ov = el("div", "modal-overlay");
@@ -681,24 +687,66 @@ async function openMaterial(mid) {
 
   box.appendChild(buildViewer(m));
 
-  // cards: visual separation of generated vs extracted; 要確認 grouping
+  // E5 — transcription panel + quote highlight = "完全解析": show WHERE in the
+  // file each card came from. Clicking a located card highlights its verbatim
+  // quote here (offsets when available, else a whitespace-tolerant search).
   const cards = m.cards || [];
+  const anyLoc = cards.some((c) => c.source_loc || c.source_quote);
+  let trPre = null;
+  const trFull = m.extracted_text || "";
+  if (trFull) {
+    const det = el("details", "extract-det mat-transcript");
+    det.open = anyLoc;
+    det.appendChild(el("summary", "", "文字起こし（カードの出典）"));
+    trPre = el("pre", "guide-md tr-pre"); trPre.textContent = trFull;
+    det.appendChild(trPre);
+    box.appendChild(det);
+  }
+  function findSpan(loc) {
+    if (loc && Number.isInteger(loc.char_start) && Number.isInteger(loc.char_end)
+        && loc.char_end > loc.char_start && loc.char_end <= trFull.length)
+      return [loc.char_start, loc.char_end];
+    const q = (loc && loc.quote) || (typeof loc === "string" ? loc : "");
+    if (!q) return null;
+    const i = trFull.indexOf(q);
+    if (i >= 0) return [i, i + q.length];
+    const esc = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    try { const mm = new RegExp(esc).exec(trFull); if (mm) return [mm.index, mm.index + mm[0].length]; } catch (e) {}
+    return null;
+  }
+  function highlightQuote(loc) {
+    if (!trPre) { toast("文字起こしがありません"); return; }
+    const det = trPre.closest("details"); if (det) det.open = true;
+    const span = findSpan(loc);
+    if (!span) { trPre.textContent = trFull; toast("該当箇所が見つかりませんでした"); return; }
+    trPre.textContent = "";
+    trPre.appendChild(document.createTextNode(trFull.slice(0, span[0])));
+    const mark = el("mark", "tr-hit", trFull.slice(span[0], span[1]));
+    trPre.appendChild(mark);
+    trPre.appendChild(document.createTextNode(trFull.slice(span[1])));
+    mark.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  const addLoc = (node, c) => {
+    if (c.source_loc || c.source_quote) {
+      node.classList.add("locatable");
+      node.title = "クリックで出典をハイライト";
+      node.appendChild(el("div", "cp-locate", "📍 出典をハイライト"));
+      node.onclick = () => highlightQuote(c.source_loc || c.source_quote);
+    }
+    return node;
+  };
+
+  // cards: visual separation of generated vs extracted; 要確認 grouping
   const lowConf = cards.filter((c) => c.confidence === "low");
   const normal = cards.filter((c) => c.confidence !== "low");
   if (lowConf.length) box.appendChild(el("div", "section-title", `要確認 ${lowConf.length}件`));
-  lowConf.forEach((c) => box.appendChild(cardPreview(c, true)));
+  lowConf.forEach((c) => box.appendChild(addLoc(cardPreview(c, true), c)));
   if (normal.length) box.appendChild(el("div", "section-title", `カード ${normal.length}枚`));
-  normal.forEach((c) => box.appendChild(cardPreview(c, false)));
+  normal.forEach((c) => box.appendChild(addLoc(cardPreview(c, false), c)));
 
   if (m.guides && m.guides.length) {
     box.appendChild(el("div", "section-title", "要点まとめ"));
     const g = el("pre", "guide-md"); g.textContent = m.guides[0].content_md; box.appendChild(g);
-  }
-  if (m.extracted_text) {
-    const det = el("details", "extract-det");
-    det.appendChild(el("summary", "", "抽出テキストを表示"));
-    const pre = el("pre", "guide-md"); pre.textContent = m.extracted_text; det.appendChild(pre);
-    box.appendChild(det);
   }
 
   // E4 — manually add a review card sourced from this material. The optional
@@ -740,6 +788,7 @@ async function openMaterial(mid) {
 
   ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
   document.body.appendChild(ov);
+  if (highlight) highlightQuote(highlight);   // E5: opened from "出典を見る"
 }
 // E3 — in-app viewer: open the uploaded file inside the modal. Photos render as
 // a zoomable <img>; PDFs use the browser's native viewer via a same-origin

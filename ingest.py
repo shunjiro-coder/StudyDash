@@ -4,6 +4,7 @@ proposed assignments + extracted cards -> hand off to generation.
 Registers the 'ingest' worker handler at import time.
 """
 
+import json
 import os
 import uuid
 from datetime import datetime
@@ -113,7 +114,6 @@ def process_upload(storage):
 
 
 def material_dict(r):
-    import json
     ej = None
     if r["extracted_json"]:
         try:
@@ -151,7 +151,7 @@ def _due_from_date(s):
         return None
 
 
-def _insert_extracted_cards(course_id, material_id, cards):
+def _insert_extracted_cards(course_id, material_id, cards, extracted_text=""):
     if not course_id or not cards:
         return 0
     now = db.now_utc_iso()
@@ -161,14 +161,18 @@ def _insert_extracted_cards(course_id, material_id, cards):
         back = (c.get("back") or "").strip()
         if not front or not back:
             continue
+        # E5: locate the verbatim quote in the transcription (offsets or null).
+        sq = (c.get("source_quote") or "").strip() or None
+        loc_json = (json.dumps(db.locate(sq, extracted_text), ensure_ascii=False)
+                    if sq else None)
         db.write(
             """INSERT OR IGNORE INTO cards
                (course_id, material_id, card_type, front, back, topic, origin,
-                source_quote, content_hash, state, repetitions, current_interval,
-                current_ease, created_at)
-               VALUES (?,?,?,?,?,?, 'extracted', ?, ?, 'new', 0, 0, 2.5, ?)""",
+                source_quote, source_loc, content_hash, state, repetitions,
+                current_interval, current_ease, created_at)
+               VALUES (?,?,?,?,?,?, 'extracted', ?, ?, ?, 'new', 0, 0, 2.5, ?)""",
             (course_id, material_id, c.get("card_type") or "qa", front, back,
-             c.get("topic"), c.get("source_quote"),
+             c.get("topic"), sq, loc_json,
              db.content_hash(front, back), now))
         n += 1
     return n
@@ -211,7 +215,6 @@ def _extract_with_retry(prompt, model, add_dirs):
 
 
 def ingest_handler(payload):
-    import json
     mid = payload["material_id"]
     m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
     if not m:
@@ -263,7 +266,8 @@ def ingest_handler(payload):
         "status='generating' WHERE id=?",
         (obj.get("text"), json.dumps(obj, ensure_ascii=False), course_id, mid))
 
-    _insert_extracted_cards(course_id, mid, obj.get("extracted_cards") or [])
+    _insert_extracted_cards(course_id, mid, obj.get("extracted_cards") or [],
+                            obj.get("text") or "")
     _insert_proposed(course_id, mid, obj.get("proposed_assignments") or [])
 
     worker.enqueue("generate", {"material_id": mid})

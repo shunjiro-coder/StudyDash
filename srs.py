@@ -17,6 +17,7 @@ Anti-pileup UX (why self-hosted SRS survives): caps (new + due), never expose th
 grand total, and day-spread overdue cards (redistribute) instead of dumping them.
 """
 
+import json
 from datetime import timedelta
 
 import db
@@ -100,11 +101,16 @@ def _why_now(card, exam_courses):
 
 
 def _card_out(r, exam_courses):
+    keys = r.keys()
     return {
         "id": r["id"], "front": r["front"], "back": r["back"],
         "topic": r["topic"], "origin": r["origin"], "confidence": r["confidence"],
         "source_quote": r["source_quote"], "course_name": r["course_name"],
         "subject_type": r["subject_type"], "state": r["state"],
+        # E5: let the review screen jump back to WHERE this card came from.
+        "material_id": r["material_id"],
+        "source_loc": (json.loads(r["source_loc"])
+                       if ("source_loc" in keys and r["source_loc"]) else None),
         "thumb_url": ("/" + r["thumb_path"]) if r["thumb_path"] else None,
         "why_now": _why_now(r, exam_courses),
     }
