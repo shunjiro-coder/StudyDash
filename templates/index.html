@@ -8,6 +8,8 @@
     // apply saved theme BEFORE first paint (avoids FOUC); no value -> follow OS via @media
     try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
   </script>
+  <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="{{ url_for('static', filename='vendor/inter/inter-latin-400-normal.woff2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>

@@ -1,65 +1,83 @@
-/* ===== First Light v2 design tokens =====
-   PRIMITIVES are defined per theme. ALIASES map legacy token names onto the
-   primitives and are declared ONCE, here, in the base :root. Because var() is
-   resolved lazily (at computed-value time, per element), an alias like
-   `--bg: var(--paper)` automatically follows whatever value --paper holds in the
-   active theme scope. Therefore the dark / [data-theme] blocks below override
-   ONLY primitives — never the aliases.
+/* ===== StudyDash design tokens (RemNote-clean neutral canvas + indigo accent) =====
+   CANONICAL token names (brief): --bg --surface --text --muted --border --accent
+   --accent-hover --on-accent, plus shape/space/shadow/motion scales. LEGACY
+   First Light names (--paper/--card/--ink/--ink-2/--line/--ok/--danger/…) are kept
+   as ALIASES onto the canonical tokens so every existing rule keeps working — only
+   the PRIMITIVE values change per theme. var() resolves lazily per element, so an
+   alias follows whatever its target holds in the active theme scope. Therefore the
+   dark / [data-theme] blocks override ONLY primitives — never the aliases.
    ⚠ Keep the dark primitive values IN SYNC between the @media block and the
    :root[data-theme="dark"] block (they are intentional duplicates). */
+
+/* Inter — vendored locally (static/vendor/inter/, OFL-1.1). No CDN: served by
+   Flask. Latin only; Japanese falls back to Hiragino (see body font stack). */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("vendor/inter/inter-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500;
+  font-display: swap; src: url("vendor/inter/inter-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600;
+  font-display: swap; src: url("vendor/inter/inter-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 700;
+  font-display: swap; src: url("vendor/inter/inter-latin-700-normal.woff2") format("woff2"); }
+
 :root {
-  /* --- primitives: light (warm "morning light" surfaces) --- */
-  --paper: #f6f5f2;
-  --card: #ffffff;
-  --ink: #211f1c;
-  --ink-2: #6d6a64;
-  --line: #e7e4de;
-  --accent: #4B45C4;          /* indigo — navigation / actions ONLY */
+  /* --- canonical primitives: light (neutral RemNote canvas) --- */
+  --bg: #ffffff;              /* page canvas */
+  --surface: #fafafb;         /* cards / panels / inputs */
+  --text: #1f2430;
+  --muted: #6b7280;
+  --border: #ececef;
+  --accent: #4b45c4;          /* indigo — navigation / actions (maintained) */
+  --accent-hover: #3e39a8;
   --on-accent: #ffffff;
+  /* --- semantic colors (kept: WCAG-checked + subject identity) --- */
   --good: #059669;
-  --overdue: #dc2626;
-  --overdue-bg: #fef2f2;
+  --overdue: #dc2626; --overdue-bg: #fef2f2;
   --reward: #fbeecb;          /* pale honey wash (legacy --warn-bg target) */
-  --honey: #E5A027;           /* saturated honey — emoji / small dab only */
-  --honey-ink: #8a5a12;       /* readable achievement TEXT on light (5.9:1) */
-  --sunk: #e7e4de;            /* neutral surface — review "もう一度" */
+  --honey: #e5a027; --honey-ink: #8a5a12;
+  --sunk: #eef0f2;            /* neutral surface — review "もう一度" */
   --stem: #2a78d6; --memo: #eb6834; --lang: #1baf7a; --other: #6d6a64;   /* subject identity */
-  --stem-ink: #2166c2; --memo-ink: #b34d1e; --lang-ink: #127a54; --other-ink: var(--ink-2); /* chip text */
-  --hard: #d97706;            /* review "難しい" amber */
+  --stem-ink: #2166c2; --memo-ink: #b34d1e; --lang-ink: #127a54; --other-ink: var(--muted);
+  --hard: #d97706;
   --gen-accent: #7c3aed;      /* AI-generated card edge — distinct from indigo */
-  --r-md: 14px;
-  --sh-card: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
-  --sh-fab: 0 4px 14px rgba(75,69,196,.35);
-  /* --- aliases: declared ONCE, never repeated in a theme block --- */
-  --bg: var(--paper); --muted: var(--ink-2); --ok: var(--good);
-  --danger: var(--overdue); --danger-bg: var(--overdue-bg);
-  --accent-ink: var(--on-accent); --radius: var(--r-md);
-  --shadow: var(--sh-card); --warn-bg: var(--reward);
+  /* --- shape / space / shadow / motion --- */
+  --r-sm: 8px; --r-md: 12px; --radius: var(--r-md);
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --sh-card: 0 1px 3px rgba(0,0,0,.06);
+  --sh-pop: 0 6px 20px rgba(0,0,0,.10);
+  --sh-fab: 0 4px 14px rgba(75,69,196,.30);
+  --ease: 150ms ease;
+  /* --- legacy aliases: declared ONCE, never repeated in a theme block --- */
+  --paper: var(--bg); --card: var(--surface); --ink: var(--text); --ink-2: var(--muted);
+  --line: var(--border); --ok: var(--good); --danger: var(--overdue); --danger-bg: var(--overdue-bg);
+  --accent-ink: var(--on-accent); --shadow: var(--sh-card); --warn-bg: var(--reward);
 }
 /* dark primitives — apply on OS-dark UNLESS an explicit light toggle is set */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #141319; --card: #1c1b22; --ink: #e8e6e1; --ink-2: #9a948b;
-    --line: #2a2833; --accent: #8B85EE; --on-accent: #141319;
+    --bg: #1a1b1e; --surface: #232428; --text: #e8e8ea; --muted: #9aa0aa;
+    --border: #2e2f34; --accent: #8b85ee; --accent-hover: #a49ef2; --on-accent: #1a1b1e;
     --good: #34d399; --overdue: #f87171; --overdue-bg: #2a1414;
-    --reward: #3a2f0a; --honey: #F0B84A; --honey-ink: #F0B84A; --sunk: #2f2d38;
-    --stem: #3987e5; --memo: #f0975a; --lang: #3ac78e; --other: #9a948b;
+    --reward: #3a2f0a; --honey: #f0b84a; --honey-ink: #f0b84a; --sunk: #2f2d38;
+    --stem: #3987e5; --memo: #f0975a; --lang: #3ac78e; --other: #9aa0aa;
     --stem-ink: #3987e5; --memo-ink: #f0975a; --lang-ink: #3ac78e;
     --hard: #e0983f; --gen-accent: #a78bfa;
     --sh-card: 0 1px 3px rgba(0,0,0,.4);
+    --sh-pop: 0 6px 20px rgba(0,0,0,.5);
     --sh-fab: 0 4px 14px rgba(0,0,0,.5);
   }
 }
 /* explicit dark toggle — wins even on a light OS (mirror the @media values) */
 :root[data-theme="dark"] {
-  --paper: #141319; --card: #1c1b22; --ink: #e8e6e1; --ink-2: #9a948b;
-  --line: #2a2833; --accent: #8B85EE; --on-accent: #141319;
+  --bg: #1a1b1e; --surface: #232428; --text: #e8e8ea; --muted: #9aa0aa;
+  --border: #2e2f34; --accent: #8b85ee; --accent-hover: #a49ef2; --on-accent: #1a1b1e;
   --good: #34d399; --overdue: #f87171; --overdue-bg: #2a1414;
-  --reward: #3a2f0a; --honey: #F0B84A; --honey-ink: #F0B84A; --sunk: #2f2d38;
-  --stem: #3987e5; --memo: #f0975a; --lang: #3ac78e; --other: #9a948b;
+  --reward: #3a2f0a; --honey: #f0b84a; --honey-ink: #f0b84a; --sunk: #2f2d38;
+  --stem: #3987e5; --memo: #f0975a; --lang: #3ac78e; --other: #9aa0aa;
   --stem-ink: #3987e5; --memo-ink: #f0975a; --lang-ink: #3ac78e;
   --hard: #e0983f; --gen-accent: #a78bfa;
   --sh-card: 0 1px 3px rgba(0,0,0,.4);
+  --sh-pop: 0 6px 20px rgba(0,0,0,.5);
   --sh-fab: 0 4px 14px rgba(0,0,0,.5);
 }
 /* explicit light toggle needs no primitive list: :not([data-theme="light"])
@@ -69,13 +87,21 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
-  background: var(--bg); color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic",
-    "Segoe UI", Roboto, sans-serif;
-  font-size: 16px; line-height: 1.5;
+  background: var(--bg); color: var(--text);
+  /* one humanist sans: Inter (Latin, vendored) → SF on macOS → Hiragino for JP */
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN",
+    "Hiragino Sans", "Yu Gothic", "Segoe UI", Roboto, sans-serif;
+  font-size: 16px; line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   padding-bottom: 96px;
 }
+/* small, fast, eased motion on interactive surfaces (nothing bouncy) */
+.btn, .tab, .chip, .a-check, .a-pin, .seg button, .grade-btn, .reveal-btn,
+.review-link, .mat-tile, .fab, .modal-close, .card-preview {
+  transition: background-color var(--ease), border-color var(--ease),
+    color var(--ease), box-shadow var(--ease), transform var(--ease);
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* layout: mobile-first, centered, single breakpoint */
 .app-header, #main, .add-form { max-width: 640px; margin: 0 auto; }
@@ -219,7 +245,7 @@ body {
 .filters select { flex: 1; min-width: 120px; }
 select, input[type=text], input[type=number], input[type=date] {
   font: inherit; padding: 9px 10px; border: 1px solid var(--line);
-  border-radius: 10px; background: var(--card); color: var(--ink); width: 100%;
+  border-radius: var(--r-sm); background: var(--card); color: var(--ink); width: 100%;
 }
 
 /* approval band */
@@ -230,11 +256,12 @@ select, input[type=text], input[type=number], input[type=date] {
 
 /* buttons */
 .btn {
-  font: inherit; font-weight: 600; padding: 9px 14px; border-radius: 10px;
+  font: inherit; font-weight: 600; padding: 9px 14px; border-radius: var(--r-sm);
   border: 1px solid var(--line); background: var(--card); color: var(--ink);
   cursor: pointer;
 }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.ghost { background: none; }
 .btn.small { padding: 5px 10px; font-size: 13px; }
 .btn.danger { color: var(--danger); }
@@ -256,7 +283,7 @@ select, input[type=text], input[type=number], input[type=date] {
 .add-row { display: flex; gap: 8px; margin-bottom: 10px; }
 .add-row.wrap { flex-wrap: wrap; }
 .add-row.end { justify-content: flex-end; margin-bottom: 0; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .seg button {
   border: none; background: var(--card); color: var(--muted);
   padding: 8px 12px; font: inherit; cursor: pointer; border-right: 1px solid var(--line);

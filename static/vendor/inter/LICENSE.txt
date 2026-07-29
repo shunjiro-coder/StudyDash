@@ -1,0 +1,11 @@
+Inter (latin subset, woff2) — vendored locally for offline, CDN-free use.
+
+Typeface: Inter by Rasmus Andersson (https://rsms.me/inter/)
+License: SIL Open Font License, Version 1.1 (OFL-1.1)
+Source of these woff2 files: @fontsource/inter@5.0.16 (latin subset, weights 400/500/600/700)
+
+The OFL-1.1 permits bundling and redistribution with the software. Full license
+text: https://openfontlicense.org/  (SIL OFL 1.1).
+
+These files are served by Flask from /static/vendor/inter/ — the app makes NO
+external/CDN request at runtime (guardrail: dependency-free, offline frontend).
