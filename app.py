@@ -370,6 +370,8 @@ def card_dict(r):
         "topic": r["topic"], "origin": r["origin"],
         "confidence": r["confidence"] if "confidence" in r.keys() else None,
         "source_quote": r["source_quote"], "verified": r["verified"],
+        "source_loc": (json.loads(r["source_loc"])
+                       if ("source_loc" in r.keys() and r["source_loc"]) else None),
         "state": r["state"], "next_due_at": r["next_due_at"],
     }
 
@@ -389,6 +391,39 @@ def api_material_detail(mid):
     d["guides"] = [{"id": g["id"], "scope_desc": g["scope_desc"],
                     "content_md": g["content_md"]} for g in guides]
     return jsonify(d)
+
+
+@app.route("/api/materials/<int:mid>/card", methods=["POST"])
+def api_material_add_card(mid):
+    """Phase E4: create a review card sourced from this material, optionally with
+    a precise source location. Additive over the extract/generate pipeline; the
+    card flows into the SAME queue (state='new') and reuses content_hash dedup
+    (D-5). source_loc is a free JSON blob describing where in the file it came
+    from (e.g. {"quote","char_start","char_end"} or {"region":[x,y,w,h]})."""
+    m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
+    if not m:
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    front = (data.get("front") or "").strip()
+    back = (data.get("back") or "").strip()
+    if not front or not back:
+        abort(400, "front and back are required")
+    source_quote = (data.get("source_quote") or "").strip() or None
+    loc = data.get("source_loc")
+    loc_json = json.dumps(loc, ensure_ascii=False) if loc else None
+    card_type = (data.get("card_type") or "qa").strip() or "qa"
+    topic = (data.get("topic") or "").strip() or None
+    ch = db.content_hash(front, back)
+    db.write(
+        "INSERT OR IGNORE INTO cards (course_id, material_id, card_type, front, back, "
+        "topic, origin, source_quote, source_loc, content_hash, state, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (m["course_id"], mid, card_type, front, back, topic, "extracted",
+         source_quote, loc_json, ch, "new", db.now_utc_iso()))
+    card = db.query_one(
+        "SELECT * FROM cards WHERE course_id IS ? AND content_hash=?",
+        (m["course_id"], ch))
+    return jsonify(card_dict(card)), 201
 
 
 @app.route("/api/materials/<int:mid>/retry", methods=["POST"])

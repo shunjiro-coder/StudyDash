@@ -404,8 +404,17 @@ def _migrate_b1(conn):
     conn.executescript(_B1_DOCS_REMS)
 
 
+def _migrate_e_source_loc(conn):
+    # Phase E: a card's exact spot in its source file — a nullable JSON blob, e.g.
+    # {"quote","char_start","char_end"} for text or {"region":[x,y,w,h]} for an
+    # image. Deliberately generic (bare TEXT) so any later E4 capture model fits
+    # without a further migration.
+    _ensure_column(conn, "cards", "source_loc", "TEXT")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
+    ("e_source_loc", "E", _migrate_e_source_loc),
 ]
 
 

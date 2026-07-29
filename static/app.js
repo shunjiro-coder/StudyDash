@@ -701,6 +701,35 @@ async function openMaterial(mid) {
     box.appendChild(det);
   }
 
+  // E4 — manually add a review card sourced from this material. The optional
+  // 引用 is stored as source_loc {quote} so the card points back at the file
+  // (a first, quote-anchored cut; richer offsets/regions come later).
+  const addWrap = el("div", "mat-addcard");
+  const addBtn = el("button", "btn small ghost", "＋ この教材から復習カードを追加");
+  addWrap.appendChild(addBtn);
+  addBtn.onclick = () => {
+    if (addWrap.querySelector(".ac-form")) return;
+    const f = el("div", "ac-form");
+    const front = el("input", "ac-in"); front.placeholder = "表（問い）";
+    const back = el("input", "ac-in"); back.placeholder = "裏（答え）";
+    const quote = el("input", "ac-in"); quote.placeholder = "引用（任意：ファイル中の該当箇所）";
+    const save = el("button", "btn small primary", "追加");
+    save.onclick = async () => {
+      const fr = front.value.trim(), bk = back.value.trim();
+      if (!fr || !bk) { toast("表と裏を入力してください"); return; }
+      const q = quote.value.trim();
+      try {
+        await api(`/api/materials/${m.id}/card`, { method: "POST", body: JSON.stringify({
+          front: fr, back: bk, source_quote: q || null, source_loc: q ? { quote: q } : null }) });
+        toast("カードを追加しました", true); ov.remove(); openMaterial(m.id);
+      } catch (e) { toast("追加に失敗: " + e.message); }
+    };
+    [front, back, quote, save].forEach((x) => f.appendChild(x));
+    addWrap.appendChild(f);
+    front.focus();
+  };
+  box.appendChild(addWrap);
+
   const foot = el("div", "add-row end");
   const regen = el("button", "btn small ghost", "再生成");
   regen.onclick = async () => { await api(`/api/materials/${mid}/regenerate`, { method: "POST" }); toast("再生成中…"); ov.remove(); await refreshMeta(); };
