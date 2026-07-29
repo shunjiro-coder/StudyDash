@@ -412,7 +412,7 @@ function renderCard(p) {
   if (r.revealed) {
     face.appendChild(el("hr", "review-sep"));
     face.appendChild(el("div", "review-back", card.back));
-    if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; face.appendChild(img); }
+    if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; img.alt = ""; img.onerror = () => img.remove(); face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
     // E5: jump to WHERE this card came from (opens the material at the quote).
     if (card.material_id && (card.source_loc || card.source_quote)) {
@@ -487,6 +487,19 @@ function fmtElapsed(iso) {
   const m = Math.floor(s / 60);
   return m > 0 ? m + "分" + String(s % 60).padStart(2, "0") + "秒" : s + "秒";
 }
+// Rough completion estimate — an honest 目安 from typical extract+generate time
+// (no real sub-progress signal exists). Overshoot degrades to "まもなく…".
+const ETA_TOTAL_SEC = 60;
+function fmtEta(iso, status) {
+  if (!iso || status === "done" || status === "failed") return "";
+  const elapsed = Math.max(0, Math.floor((Date.now() - new Date(iso)) / 1000));
+  let rem = ETA_TOTAL_SEC - elapsed;
+  const soon = rem < 10;
+  if (soon) rem = 10;   // soft floor: keep showing an approx time even past the estimate
+  const m = Math.floor(rem / 60), s = rem % 60;
+  const t = m > 0 ? m + "分" + String(s).padStart(2, "0") + "秒" : s + "秒";
+  return (soon ? "まもなく完了 — 残りおよそ " : "残りおよそ ") + t + "（目安）";
+}
 function buildProgress(m) {
   const box = el("div", "mat-progress");
   const bar = el("div", "mat-bar"); bar.appendChild(el("div", "mat-bar-fill")); box.appendChild(bar);
@@ -499,6 +512,9 @@ function buildProgress(m) {
   meta.appendChild(el("span", "", m.status === "extracting" ? "読み取り中… " : "カード作成中… "));
   meta.appendChild(el("span", "mat-elapsed-t", fmtElapsed(m.created_at)));
   box.appendChild(meta);
+  const eta = el("div", "mat-eta");
+  eta.appendChild(el("span", "mat-eta-t", fmtEta(m.created_at, m.status)));
+  box.appendChild(eta);
   return box;
 }
 function uploadingTile() {
@@ -517,7 +533,9 @@ function ensureElapsedTicker() {
     let any = false;
     document.querySelectorAll(".mat-tile.inflight[data-created]").forEach((t) => {
       const tt = t.querySelector(".mat-elapsed-t"); if (!tt || !t.dataset.created) return;
-      tt.textContent = fmtElapsed(t.dataset.created); any = true;
+      tt.textContent = fmtElapsed(t.dataset.created);
+      const et = t.querySelector(".mat-eta-t"); if (et) et.textContent = fmtEta(t.dataset.created);
+      any = true;
     });
     if (!any) { clearInterval(elapsedTimer); elapsedTimer = null; }
   }, 1000);
@@ -563,12 +581,19 @@ function aiOffNote() {
 async function renderMaterials() {
   const p = $("#panel-materials"); p.innerHTML = "";
   if (S.meta && !S.meta.claude_ok) p.appendChild(aiOffNote());  // pre-empt wasted drops
+  // click-to-upload (not just drag & drop): works on any device, accepts 写真・PDF
+  const upbar = el("div", "mat-upbar");
+  const upbtn = el("button", "btn primary", "＋ 教材をアップロード");
+  upbtn.onclick = () => { const fi = $("#file-input"); if (fi) fi.click(); };
+  upbar.appendChild(upbtn);
+  upbar.appendChild(el("span", "mat-uphint", "写真・PDF に対応（ドラッグ&ドロップもOK）"));
+  p.appendChild(upbar);
   let mats;
   try { mats = await api("/api/materials"); } catch (e) { p.appendChild(el("div", "empty", "読み込み失敗")); return; }
   if (!mats.length && !S.uploading) {
     const e = el("div", "empty");
-    e.appendChild(el("div", "big", "📸"));
-    e.appendChild(el("div", "", "写真・PDFをどこにでもドロップすると解析して復習カードを作ります"));
+    e.appendChild(el("div", "big", "📄"));
+    e.appendChild(el("div", "", "上のボタンから写真・PDFを選ぶか、どこにでもドロップすると解析して復習カードを作ります"));
     p.appendChild(e); return;
   }
   // range presets (only when there are stored materials)
@@ -612,12 +637,20 @@ function matTile(m) {
   const flight = inFlight(m.status);
   const t = el("div", "mat-tile" + (selMat.has(m.id) ? " sel" : "") + (flight ? " inflight" : "") + (m.status === "failed" ? " failed" : ""));
   if (m.created_at) t.dataset.created = m.created_at;
-  if (m.thumb_url && m.kind === "photo") { const img = el("img"); img.src = m.thumb_url; img.loading = "lazy"; t.appendChild(img); }
-  else { t.appendChild(el("div", "mat-ph", m.kind === "pdf" ? "📄" : "📸")); }
+  if (m.thumb_url && m.kind === "photo") {
+    const img = el("img"); img.src = m.thumb_url; img.loading = "lazy"; img.alt = "";
+    // broken thumbnail -> same neutral placeholder as a missing one (no weird icon)
+    img.onerror = () => img.replaceWith(el("div", "mat-ph", "📸"));
+    t.appendChild(img);
+  } else { t.appendChild(el("div", "mat-ph", m.kind === "pdf" ? "📄" : "📸")); }
   if (flight) {
     t.appendChild(buildProgress(m));
   } else {
-    t.appendChild(el("div", "mat-badge " + m.status, STAGE[m.status] || m.status));
+    // G1: a done material with un-approved drafts shows 確認待ち, not 完了.
+    if (m.status !== "failed" && m.proposed_count > 0)
+      t.appendChild(el("div", "mat-badge proposed", `確認待ち ${m.proposed_count}`));
+    else
+      t.appendChild(el("div", "mat-badge " + m.status, STAGE[m.status] || m.status));
     if (m.status === "failed") t.appendChild(el("div", "mat-fail-hint", classifyFailure(m.error_message, m.attempts_exhausted, m.has_text).cause));
     else if (m.summary) t.appendChild(el("div", "mat-sum", m.summary));
   }
@@ -736,9 +769,60 @@ async function openMaterial(mid, highlight) {
     return node;
   };
 
-  // cards: visual separation of generated vs extracted; 要確認 grouping
-  const lowConf = cards.filter((c) => c.confidence === "low");
-  const normal = cards.filter((c) => c.confidence !== "low");
+  // G1: proposal / confirmation gate — proposed cards await approval (nothing
+  // enters the review queue until confirmed). Recommended = one click; 項目を選ぶ
+  // = per-item checklist, each with its E5 source-highlight.
+  const proposed = cards.filter((c) => c.state === "proposed");
+  if (proposed.length) {
+    const panel = el("div", "proposal");
+    panel.appendChild(el("div", "proposal-head", `🎯 学習プランの提案 — ${proposed.length}項目`));
+    panel.appendChild(el("div", "proposal-sub", "この教材から学べる項目です。推奨のまま学ぶか、項目を選んでください（承認するまで復習には入りません）。"));
+    const approve = async (cardIds) => {
+      try {
+        const body = cardIds == null ? {} : { card_ids: cardIds };
+        const r = await api(`/api/materials/${m.id}/approve`, { method: "POST", body: JSON.stringify(body) });
+        toast(`${r.approved}項目を学習に追加しました`, true);
+        ov.remove(); await refreshMeta(); renderMaterials(); openMaterial(m.id);
+      } catch (e) { toast("承認に失敗: " + e.message); }
+    };
+    const recRow = el("div", "proposal-actions");
+    const rec = el("button", "btn primary", `推奨で学ぶ（全${proposed.length}項目）`);
+    rec.onclick = () => approve(null);
+    recRow.appendChild(rec);
+    panel.appendChild(recRow);
+    const pick = el("details", "proposal-pick");
+    pick.appendChild(el("summary", "", "項目を選ぶ"));
+    const boxes = [];
+    proposed.forEach((c) => {
+      const row = el("label", "pp-row");
+      const cb = el("input", "pp-cb"); cb.type = "checkbox"; cb.checked = true; cb.value = String(c.id);
+      boxes.push(cb); row.appendChild(cb);
+      const bd = el("div", "pp-body");
+      bd.appendChild(el("div", "pp-front", c.front));
+      bd.appendChild(el("div", "pp-back", c.back));
+      if (c.source_loc || c.source_quote) {
+        const loc = el("button", "pp-loc", "📍 出典"); loc.type = "button";
+        loc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); highlightQuote(c.source_loc || c.source_quote); };
+        bd.appendChild(loc);
+      }
+      row.appendChild(bd); pick.appendChild(row);
+    });
+    const pickRow = el("div", "proposal-actions");
+    const pb = el("button", "btn small primary", "選んだ項目で学ぶ");
+    pb.onclick = () => {
+      const ids = boxes.filter((x) => x.checked).map((x) => Number(x.value));
+      if (!ids.length) { toast("1項目以上選んでください"); return; }
+      approve(ids);
+    };
+    pickRow.appendChild(pb); pick.appendChild(pickRow);
+    panel.appendChild(pick);
+    box.appendChild(panel);
+  }
+
+  // already-approved cards (new/review/suspended): generated vs extracted grouping
+  const settled = cards.filter((c) => c.state !== "proposed");
+  const lowConf = settled.filter((c) => c.confidence === "low");
+  const normal = settled.filter((c) => c.confidence !== "low");
   if (lowConf.length) box.appendChild(el("div", "section-title", `要確認 ${lowConf.length}件`));
   lowConf.forEach((c) => box.appendChild(addLoc(cardPreview(c, true), c)));
   if (normal.length) box.appendChild(el("div", "section-title", `カード ${normal.length}枚`));
@@ -803,11 +887,7 @@ function buildViewer(m) {
     frame.src = url; frame.loading = "lazy"; frame.setAttribute("title", "PDFプレビュー");
     wrap.appendChild(frame);
   } else {
-    const img = el("img", "mat-view-img");
-    img.src = url; img.alt = "アップロード画像"; img.loading = "lazy";
-    img.title = "クリックで拡大／縮小";
-    img.onclick = () => img.classList.toggle("zoomed");
-    wrap.appendChild(img);
+    wrap.appendChild(viewerImg(url));
   }
   const bar = el("div", "mat-view-bar");
   const open = el("a", "btn small ghost", "元ファイルを新しいタブで開く ↗");
@@ -815,6 +895,31 @@ function buildViewer(m) {
   bar.appendChild(open);
   wrap.appendChild(bar);
   return wrap;
+}
+// A zoomable viewer image that, if it fails to load, cleanly swaps itself for a
+// labeled placeholder with a one-tap 再読み込み (cache-busted) — so a missing or
+// still-processing file reads as intentional, not a broken-image glitch.
+function viewerImg(url) {
+  const img = el("img", "mat-view-img");
+  img.src = url; img.alt = "アップロード画像"; img.loading = "lazy";
+  img.title = "クリックで拡大／縮小";
+  img.onclick = () => img.classList.toggle("zoomed");
+  img.onerror = () => img.replaceWith(brokenImageCard(url));
+  return img;
+}
+function brokenImageCard(url) {
+  const box = el("div", "img-broken");
+  box.appendChild(el("div", "img-broken-ico", "🖼"));
+  box.appendChild(el("div", "img-broken-msg", "画像を読み込めませんでした"));
+  box.appendChild(el("div", "img-broken-sub", "ファイルが移動・削除されたか、まだ処理中の可能性があります。"));
+  const row = el("div", "img-broken-actions");
+  const retry = el("button", "btn small", "再読み込み");
+  retry.onclick = () => box.replaceWith(viewerImg(url + (url.includes("?") ? "&" : "?") + "r=" + Date.now()));
+  const open = el("a", "btn small ghost", "元ファイルを開く ↗");
+  open.href = url; open.target = "_blank"; open.rel = "noopener";
+  row.appendChild(retry); row.appendChild(open);
+  box.appendChild(row);
+  return box;
 }
 function cardPreview(c, low) {
   const d = el("div", "card-preview" + (c.origin === "generated" ? " generated" : "") + (low ? " low" : ""));
@@ -978,7 +1083,9 @@ function effectiveTheme() {
 function syncThemeButton() {
   const btn = $("#theme-toggle"); if (!btn) return;
   const dark = effectiveTheme() === "dark";
-  btn.textContent = dark ? "☀" : "☾";
+  // U+FE0E forces text (monochrome) presentation so the sun takes the CSS color
+  // (a crisp light glyph in dark mode) instead of the black emoji sun.
+  btn.textContent = dark ? "☀︎" : "☾";
   btn.setAttribute("aria-pressed", dark ? "true" : "false");
   btn.setAttribute("aria-label", dark ? "ライトに切替" : "ダークに切替");
 }
@@ -1043,9 +1150,95 @@ function closeAccentMenu() {
 function toggleAccentMenu() { if ($("#accent-menu")) closeAccentMenu(); else openAccentMenu(); }
 
 // ---------- init ----------
+// Classroom sync — make the "手動/同期" chip actually actionable: explain the
+// state, one-click sync when set up, and clear (optional) setup steps otherwise.
+function syncLink(href, text) {
+  const a = el("a", "sync-link", text + " ↗");
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+function syncSetupSteps() {
+  const d = el("details", "sync-help"); d.open = true;
+  d.appendChild(el("summary", "", "接続する手順（任意・5分ほど）"));
+  const ol = el("ol", "sync-steps");
+  const li1 = el("li", "");
+  li1.appendChild(document.createTextNode("Classroom API を有効化："));
+  li1.appendChild(syncLink("https://console.cloud.google.com/apis/library/classroom.googleapis.com", "APIを有効化"));
+  ol.appendChild(li1);
+  const li2 = el("li", "");
+  li2.appendChild(document.createTextNode("OAuth クライアント（種類：デスクトップ アプリ）を作成："));
+  li2.appendChild(syncLink("https://console.cloud.google.com/apis/credentials", "認証情報を作成"));
+  ol.appendChild(li2);
+  ol.appendChild(el("li", "", "その JSON をダウンロードし、StudyDash フォルダに credentials.json という名前で置く"));
+  const li4 = el("li", "");
+  li4.appendChild(document.createTextNode("ターミナルで初回認証（ブラウザで許可）："));
+  li4.appendChild(el("code", "sync-cmd", "./venv/bin/python classroom.py test"));
+  ol.appendChild(li4);
+  ol.appendChild(el("li", "", "アプリを再起動し、この画面の「今すぐ同期」で取り込む"));
+  d.appendChild(ol);
+  d.appendChild(el("div", "sync-note", "Classroom は任意です。接続しなくても、課題の手入力と写真取り込みで通常どおり使えます。"));
+  return d;
+}
+function openSyncModal() {
+  const configured = !!(S.meta && S.meta.classroom_configured);
+  const ov = el("div", "modal-overlay");
+  const box = el("div", "modal sync-modal");
+  const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
+  box.appendChild(close);
+  box.appendChild(el("h3", "", "課題の同期（Google Classroom）"));
+  if (S.meta && S.meta.last_sync) {
+    const ago = Math.round((Date.now() - new Date(S.meta.last_sync)) / 60000);
+    box.appendChild(el("div", "sync-last", ago < 60 ? `最終同期: ${ago}分前` : `最終同期: 約${Math.round(ago / 60)}時間前`));
+  }
+  box.appendChild(el("div", "sync-status", configured
+    ? "✅ 接続設定あり。ボタンで最新の課題を取り込めます。"
+    : "現在は「手動」（Classroom未接続）。課題は手入力・写真取り込みで問題なく使えます。接続すると課題が自動で取り込まれます。"));
+  const result = el("div", "sync-result");
+  const doSync = async (btn) => {
+    if (btn) btn.disabled = true;
+    result.textContent = "同期中…";
+    try {
+      const r = await api("/api/sync", { method: "POST" });
+      if (r.ok) {
+        toast(`${r.upserted}件の課題を同期しました`, true);
+        result.textContent = `✅ ${r.upserted}件を同期（${(r.courses || []).length}コース）`;
+        await refreshMeta();
+      } else if (r.reason === "unavailable") {
+        result.textContent = "";
+        result.appendChild(el("div", "", "初回だけ端末での認証が必要です："));
+        result.appendChild(el("code", "sync-cmd", "./venv/bin/python classroom.py test"));
+        result.appendChild(el("div", "sync-note", "実行してブラウザで許可 → 戻って「今すぐ同期」。"));
+      } else {
+        result.textContent = r.message || "同期できませんでした。";
+      }
+    } catch (e) { result.textContent = "同期に失敗: " + e.message; }
+    if (btn) btn.disabled = false;
+  };
+  if (configured) {
+    const btn = el("button", "btn primary", "今すぐ同期");
+    btn.onclick = () => doSync(btn);
+    box.appendChild(btn);
+  }
+  box.appendChild(result);
+  // no-connection fallback: read a Classroom screenshot through the photo
+  // pipeline (it already extracts assignments from a 課題一覧 screenshot).
+  const fb = el("div", "sync-fallback");
+  fb.appendChild(el("div", "sync-fb-title", "接続できないときは（接続なしでOK）"));
+  fb.appendChild(el("div", "sync-note", "Classroom の課題一覧のスクリーンショットを取り込むと、課題を自動で読み取って登録します。"));
+  const fbBtn = el("button", "btn small", "スクショ／画像を取り込む");
+  fbBtn.onclick = () => { ov.remove(); switchTab("materials"); const fi = $("#file-input"); if (fi) fi.click(); };
+  fb.appendChild(fbBtn);
+  box.appendChild(fb);
+  box.appendChild(syncSetupSteps());
+  ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  document.body.appendChild(ov);
+}
+
 function init() {
   document.querySelectorAll(".tab").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
   $("#theme-toggle").onclick = toggleTheme; syncThemeButton();
+  { const si = $("#sync-info"); if (si) si.onclick = openSyncModal; }
+  { const fi = $("#file-input"); if (fi) fi.onchange = () => { const files = [...fi.files]; fi.value = ""; if (files.length) uploadFiles(files); }; }
   { const at = $("#accent-toggle"); if (at) at.onclick = (e) => { e.stopPropagation(); toggleAccentMenu(); }; }
   $("#add-fab").onclick = openAdd;
   $("#af-cancel").onclick = hideForm;

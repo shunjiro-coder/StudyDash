@@ -88,7 +88,8 @@ def process_upload(storage):
     ext = os.path.splitext(filename)[1].lower()
     kind = _classify(ext)
     if kind is None:
-        raise ValueError(f"未対応の形式です: {ext or '(不明)'}")
+        raise ValueError(
+            f"未対応の形式です（{ext or '不明'}）。写真（JPG/PNG/HEIC）か PDF にしてください。")
     # Per-file size cap -> errors[] (MAX_CONTENT_LENGTH would 413 the WHOLE
     # batch, so a single oversized photo would silently sink the others).
     limit = _max_upload_bytes()
@@ -124,6 +125,10 @@ def material_dict(r):
     attempts = (r["attempts"] if "attempts" in keys else 0) or 0
     card_count = db.query_one(
         "SELECT COUNT(*) n FROM cards WHERE material_id=?", (r["id"],))["n"]
+    # G1: cards drafted but not yet approved into the review queue
+    proposed_count = db.query_one(
+        "SELECT COUNT(*) n FROM cards WHERE material_id=? AND state='proposed'",
+        (r["id"],))["n"]
     return {
         "id": r["id"], "kind": r["kind"], "status": r["status"],
         "course_id": r["course_id"], "assignment_id": r["assignment_id"],
@@ -134,6 +139,7 @@ def material_dict(r):
         "has_text": bool(r["extracted_text"]),
         # additive fields for the honest-completion + failed-after-N UI (E):
         "card_count": card_count,
+        "proposed_count": proposed_count,
         "attempts": attempts,
         "attempts_exhausted": bool(attempts >= db.max_material_attempts()),
         "created_at": r["created_at"],
@@ -170,7 +176,7 @@ def _insert_extracted_cards(course_id, material_id, cards, extracted_text=""):
                (course_id, material_id, card_type, front, back, topic, origin,
                 source_quote, source_loc, content_hash, state, repetitions,
                 current_interval, current_ease, created_at)
-               VALUES (?,?,?,?,?,?, 'extracted', ?, ?, ?, 'new', 0, 0, 2.5, ?)""",
+               VALUES (?,?,?,?,?,?, 'extracted', ?, ?, ?, 'proposed', 0, 0, 2.5, ?)""",
             (course_id, material_id, c.get("card_type") or "qa", front, back,
              c.get("topic"), sq, loc_json,
              db.content_hash(front, back), now))

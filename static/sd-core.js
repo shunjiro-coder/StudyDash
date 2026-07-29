@@ -72,8 +72,22 @@ function sdInitShell() {
       if (SD.onNav) SD.onNav(b.dataset.nav);
     });
   });
-  const st = $("#side-toggle"), sb = $("#sidebar");
-  if (st && sb) st.addEventListener("click", () => sb.classList.toggle("open"));
+  // Sidebar show/hide at ANY width. Desktop: collapse into a full-width canvas
+  // (persisted); a floating ☰ brings it back. Mobile (≤860px): the ☰ toggles the
+  // slide-in drawer, and 畳む closes it.
+  const st = $("#side-toggle"), sb = $("#sidebar"), cb = $("#sidebar-collapse");
+  const wide = () => window.matchMedia("(min-width: 861px)").matches;
+  const setCollapsed = (v) => {
+    document.documentElement.classList.toggle("sb-collapsed", v);
+    try { localStorage.setItem("sidebar_collapsed", v ? "1" : ""); } catch (e) {}
+  };
+  if (st && sb) st.addEventListener("click", () => {
+    if (wide()) setCollapsed(!document.documentElement.classList.contains("sb-collapsed"));
+    else sb.classList.toggle("open");
+  });
+  if (cb && sb) cb.addEventListener("click", () => {
+    if (wide()) setCollapsed(true); else sb.classList.remove("open");
+  });
   SD.setCurrentByTab("today");   // default view is the Today tab (app mode)
 }
 document.addEventListener("DOMContentLoaded", sdInitShell);

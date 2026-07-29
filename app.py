@@ -313,8 +313,8 @@ def api_meta():
         "SELECT COUNT(*) n FROM materials WHERE status IN "
         "('extracting','generating')")["n"]
     review_n = db.query_one(
-        "SELECT COUNT(*) n FROM cards WHERE state != 'suspended' AND "
-        "(state = 'new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
+        "SELECT COUNT(*) n FROM cards WHERE state NOT IN ('suspended','proposed') "
+        "AND (state = 'new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
         (now,))["n"]
     last_sync = db.query_one(
         "SELECT MAX(last_synced_at) t FROM assignments WHERE source='classroom'")["t"]
@@ -424,6 +424,30 @@ def api_material_add_card(mid):
         "SELECT * FROM cards WHERE course_id IS ? AND content_hash=?",
         (m["course_id"], ch))
     return jsonify(card_dict(card)), 201
+
+
+@app.route("/api/materials/<int:mid>/approve", methods=["POST"])
+def api_material_approve(mid):
+    """Phase G1: promote PROPOSED cards into the review queue. The upload
+    pipeline drafts cards as state='proposed' (never auto-queued) so nothing is
+    studied until the user confirms the plan here. Selected cards -> 'new'
+    (enter the queue); the rest of this material's proposed cards -> 'suspended'
+    (dropped from the plan but recoverable). Omit card_ids to approve ALL
+    (the 推奨で学ぶ one-click path)."""
+    m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
+    if not m:
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    ids = data.get("card_ids")
+    proposed = {r["id"] for r in db.query(
+        "SELECT id FROM cards WHERE material_id=? AND state='proposed'", (mid,))}
+    approve = proposed if ids is None else {int(i) for i in ids} & proposed
+    drop = proposed - approve
+    stmts = [("UPDATE cards SET state='new' WHERE id=?", (cid,)) for cid in approve]
+    stmts += [("UPDATE cards SET state='suspended' WHERE id=?", (cid,)) for cid in drop]
+    if stmts:
+        db.write_many(stmts)
+    return jsonify({"ok": True, "approved": len(approve), "dropped": len(drop)})
 
 
 @app.route("/api/materials/<int:mid>/retry", methods=["POST"])

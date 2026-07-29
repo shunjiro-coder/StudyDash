@@ -158,8 +158,8 @@ def build_today():
                             focus["a"]) if focus else None)
 
     review_due = db.query_one(
-        "SELECT COUNT(*) n FROM cards WHERE state != 'suspended' AND "
-        "(state = 'new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
+        "SELECT COUNT(*) n FROM cards WHERE state NOT IN ('suspended','proposed') "
+        "AND (state = 'new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
         (now_iso,))["n"]
 
     return {

@@ -353,7 +353,7 @@ CREATE TABLE IF NOT EXISTS cards (
     confidence       TEXT,                              -- high|low (generated) | NULL
     verified         TEXT,                              -- NULL|ok|wrong
     content_hash     TEXT NOT NULL,
-    state            TEXT NOT NULL DEFAULT 'new',       -- new|learning|review|suspended
+    state            TEXT NOT NULL DEFAULT 'new',       -- proposed|new|learning|review|suspended
     next_due_at      TEXT,                              -- ISO8601 UTC (NULL for new)
     repetitions      INTEGER NOT NULL DEFAULT 0,        -- SM-2 consecutive correct count
     current_interval INTEGER NOT NULL DEFAULT 0,        -- days

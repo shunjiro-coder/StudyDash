@@ -63,7 +63,7 @@ def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
                (course_id, material_id, card_type, front, back, topic, origin,
                 confidence, source_quote, source_loc, content_hash, state,
                 repetitions, current_interval, current_ease, created_at)
-               VALUES (?,?,?,?,?,?, 'generated', ?,?,?,?, 'new', 0, 0, 2.5, ?)""",
+               VALUES (?,?,?,?,?,?, 'generated', ?,?,?,?, 'proposed', 0, 0, 2.5, ?)""",
             (course_id, material_id, c.get("card_type") or "qa", front, back,
              c.get("topic"), conf, sq, loc_json, ch, now))
         if cur.rowcount:

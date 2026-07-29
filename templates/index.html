@@ -9,6 +9,7 @@
     try {
       var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
       var a = localStorage.getItem("accent"); if (a && a !== "indigo") document.documentElement.setAttribute("data-accent", a);
+      if (localStorage.getItem("sidebar_collapsed")) document.documentElement.classList.add("sb-collapsed");
     } catch (e) {}
   </script>
   <link rel="preload" as="font" type="font/woff2" crossorigin
@@ -17,7 +18,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css') }}">
 </head>
 <body>
-  <div id="drop-overlay" class="drop-overlay hidden"><div>ここに落とす 📸</div></div>
+  <div id="drop-overlay" class="drop-overlay hidden"><div>ここに教材を落とす（写真・PDF）📄</div></div>
+  <input type="file" id="file-input" accept="image/*,application/pdf,.pdf,.heic,.heif" multiple hidden>
 
   <button id="side-toggle" class="side-toggle" type="button" aria-label="メニュー">☰</button>
 
@@ -38,12 +40,18 @@
         <button class="side-item tab" data-tab="materials" type="button">教材<span class="badge" id="badge-materials"></span></button>
       </nav>
       <div class="side-foot">
-        <span id="analyzing" class="chip hidden" title="解析中">⏳ <span id="analyzing-n">0</span></span>
-        <span id="sync-info" class="chip subtle" title="最終同期"></span>
-        <span id="cost-meter" class="chip subtle" title="今月の目安"></span>
-        <span id="backup-info" class="chip subtle warn hidden" title="バックアップ状態"></span>
-        <button id="accent-toggle" class="chip accent-toggle" type="button" aria-label="アクセント色" aria-haspopup="true" title="アクセント色">●</button>
-        <button id="theme-toggle" class="chip theme-toggle" type="button" aria-label="テーマ切替">☾</button>
+        <div class="foot-status">
+          <span id="analyzing" class="chip hidden" title="解析中の教材の数">⏳ <span id="analyzing-n">0</span></span>
+          <button id="sync-info" class="chip subtle" type="button" aria-label="課題の同期" data-tip="クリックで同期・接続設定。未接続だと「手動」＝課題は手入力です"></button>
+          <span id="cost-meter" class="chip subtle" data-tip="今月のAI利用のめやす（写真の解析＋カード生成の回数。表示のみで、実際に止める制限ではありません）"></span>
+          <span id="backup-info" class="chip subtle warn hidden" title="バックアップ状態"></span>
+        </div>
+        <div class="foot-ctrls">
+          <button id="accent-toggle" class="chip accent-toggle" type="button" aria-label="アクセント色" aria-haspopup="true" title="アクセント色">●</button>
+          <button id="theme-toggle" class="chip theme-toggle" type="button" aria-label="テーマ切替">☾</button>
+          <span class="foot-grow"></span>
+          <button id="sidebar-collapse" class="chip icon-chip" type="button" aria-label="サイドバーを畳む" title="サイドバーを畳む">«</button>
+        </div>
       </div>
     </aside>
 

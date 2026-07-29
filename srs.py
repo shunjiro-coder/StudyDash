@@ -137,8 +137,8 @@ def get_queue():
 def counts():
     now_iso = db.now_utc_iso()
     n = db.query_one(
-        "SELECT COUNT(*) n FROM cards WHERE state != 'suspended' AND "
-        "(state='new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
+        "SELECT COUNT(*) n FROM cards WHERE state NOT IN ('suspended','proposed') "
+        "AND (state='new' OR (next_due_at IS NOT NULL AND next_due_at <= ?))",
         (now_iso,))["n"]
     return n
 
@@ -171,7 +171,7 @@ def redistribute(days=7):
 # Stateless (recomputed daily): as the exam nears, days shrink -> more per day.
 # --------------------------------------------------------------------------
 def _cram_candidates(course_id=None, topic=None):
-    where, params = ["c.state != 'suspended'"], []
+    where, params = ["c.state NOT IN ('suspended','proposed')"], []
     if course_id:
         where.append("c.course_id = ?")
         params.append(course_id)
@@ -214,7 +214,7 @@ def cram_for_assignment(assignment_id):
 # Mastery (%) and weak-card isolation + drill
 # --------------------------------------------------------------------------
 def mastery(course_id=None):
-    where, params = ["state != 'suspended'"], []
+    where, params = ["state NOT IN ('suspended','proposed')"], []
     if course_id:
         where.append("course_id = ?")
         params.append(course_id)
@@ -231,7 +231,7 @@ def weak_cards(limit=5):
     now_iso = db.now_utc_iso()
     exam_courses = _exam_soon_courses(now_iso)
     rows = db.query(
-        CARD_JOIN + " WHERE c.state != 'suspended' AND (c.verified='wrong' OR "
+        CARD_JOIN + " WHERE c.state NOT IN ('suspended','proposed') AND (c.verified='wrong' OR "
         "c.id IN (SELECT card_id FROM reviews WHERE grade='again' "
         "GROUP BY card_id HAVING COUNT(*) >= 2)) ORDER BY c.id LIMIT ?",
         (limit,))
@@ -239,7 +239,7 @@ def weak_cards(limit=5):
 
 
 def drill(course_id=None, topic=None, limit=20):
-    where, params = ["c.state != 'suspended'"], []
+    where, params = ["c.state NOT IN ('suspended','proposed')"], []
     if course_id:
         where.append("c.course_id = ?")
         params.append(course_id)
