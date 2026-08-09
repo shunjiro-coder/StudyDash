@@ -5,7 +5,14 @@ Rules:
 - Keep any fill-in-the-blank markers (___ or {{{{ }}}}), LaTeX ($...$), inline code, numbers and simple formatting intact.
 - Do NOT add explanations, notes, or any extra content — translate ONLY the given text.
 - If the text is already in {target}, return it as-is.
-- Use the established term in the target language when one exists.
+- {term_rule}
+- 日本語にするときは常体（〜する／〜である）で統一する。カード間で敬体と常体が
+  混ざらないようにする。/ When translating into Japanese use plain form (常体)
+  consistently — never mix です・ます into a deck of plain-form cards.
+- If a parenthetical gloss ends up the same word as the term it glosses, drop the
+  parenthesis: リボース（ribose） -> "Ribose", NOT "Ribose (ribose)". Keep a gloss
+  only when it still adds something, e.g. mRNA（メッセンジャーRNA） -> "mRNA
+  (messenger RNA)".
 
 Output ONE JSON object only (no preamble, no code fence):
 {{"front": "the front, translated into {target}", "back": "the back, translated into {target}"}}

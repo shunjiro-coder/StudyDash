@@ -55,13 +55,33 @@ LANG_DIRECTIVE = {
     "en": "Write ALL output in English (translate it if the input is in another language).",
 }
 
+# Terminology discipline, appended to every directive. Forcing a language is not
+# enough: a real-material eval on an English biology deck showed the model coining
+# calques and katakana pseudo-terms rather than using the words a textbook uses
+# (中心教義 for Central Dogma, ニトロゲンベース for nitrogenous base, テンプレート for
+# the 鋳型 strand), and spelling one term two ways across surfaces (エクソン/エキソン).
+TERM_RULE = (
+    "専門用語は、その言語の教科書で実際に使われている標準的な用語を使う"
+    "（直訳やカタカナ音訳を作らない。例: Central Dogma→セントラルドグマ、"
+    "template→鋳型（「テンプレート」としない）、nitrogenous base→窒素塩基、"
+    "transfer RNA→転移RNA）。"
+    "同じ用語は最初から最後まで同じ表記に統一する。"
+    "専門用語は1対1で訳し、上位語・下位語・近い概念に置き換えない"
+    "（nucleotide=ヌクレオチド であって 塩基 ではない。base=塩基、strand=鎖、"
+    "gene=遺伝子）。元の資料がより具体的な語を使っているなら、訳文も同じ具体度の語を使う。"
+    "/ Use the term a textbook in the output language actually uses — never invent a "
+    "literal calque or a transliteration when a real term exists — and spell each term "
+    "identically throughout. Map technical terms one-to-one: never substitute a broader "
+    "or narrower concept (nucleotide is NOT 'base'). If the source uses the more "
+    "specific term, the output must use the equally specific term.")
+
 
 def _lang_line(lang=None):
     """Resolve the output-language directive. `lang` None -> the saved global
     setting (db.content_lang). Unknown values fall back to 'auto'."""
     if lang not in db.VALID_CONTENT_LANGS:
         lang = db.content_lang()
-    return LANG_DIRECTIVE.get(lang, LANG_DIRECTIVE["auto"])
+    return LANG_DIRECTIVE.get(lang, LANG_DIRECTIVE["auto"]) + " " + TERM_RULE
 RAW_PREVIEW = 300
 FAIL_EXHAUSTED_MSG = (
     "何度か試しましたが解析できませんでした。お手数ですが手動で入力してください。")
@@ -305,6 +325,7 @@ def translate_card(card_id, target_lang):
         return {"lang": target_lang, "front": hit["front"], "back": hit["back"], "cached": True}
     with open(TRANSLATE_PROMPT, encoding="utf-8") as f:
         prompt = f.read().format(target=TRANSLATE_TARGETS[target_lang],
+                                 term_rule=TERM_RULE,
                                  front=card["front"], back=card["back"])
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     front = (obj.get("front") or "").strip()
