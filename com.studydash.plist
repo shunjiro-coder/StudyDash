@@ -16,18 +16,18 @@
   <string>com.studydash</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/shunjiro88/Desktop/StudyDash/venv/bin/python</string>
-    <string>/Users/shunjiro88/Desktop/StudyDash/app.py</string>
+    <string>/Users/shunjiro88/Desktop/Everything/Projects/StudyDash/venv/bin/python</string>
+    <string>/Users/shunjiro88/Desktop/Everything/Projects/StudyDash/app.py</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/shunjiro88/Desktop/StudyDash</string>
+  <string>/Users/shunjiro88/Desktop/Everything/Projects/StudyDash</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/shunjiro88/Desktop/StudyDash/studydash.log</string>
+  <string>/Users/shunjiro88/Desktop/Everything/Projects/StudyDash/studydash.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/shunjiro88/Desktop/StudyDash/studydash.log</string>
+  <string>/Users/shunjiro88/Desktop/Everything/Projects/StudyDash/studydash.log</string>
 </dict>
 </plist>
