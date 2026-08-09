@@ -31,6 +31,13 @@ RECAST_PROMPT = os.path.join(BASE_DIR, "prompts", "recast.txt")
 QUIZ_PROMPT = os.path.join(BASE_DIR, "prompts", "quiz.txt")
 SUMMARY_PROMPT = os.path.join(BASE_DIR, "prompts", "summary.txt")
 TRANSLATE_PROMPT = os.path.join(BASE_DIR, "prompts", "translate.txt")
+GLOSSARY_PROMPT = os.path.join(BASE_DIR, "prompts", "glossary.txt")
+
+# Phase K: per-material term table. Capped so the injected directive stays small
+# next to the material itself — a glossary that crowds out the content is worse
+# than none.
+GLOSSARY_MAX_TERMS = 24
+GLOSSARY_MIN_CHARS = 400   # too little text to be worth an AI call
 
 # Phase J: card language-flip. Only ja<->en are offered in the review UI.
 TRANSLATE_TARGETS = {"ja": "日本語 (Japanese)", "en": "英語 (English)"}
@@ -206,13 +213,19 @@ def generate_for_material(material_id):
         return 0, "other -> tracker only"
 
     prompt_path = PROMPTS.get(stype, PROMPTS["memo"])
-    with open(prompt_path, encoding="utf-8") as f:
-        prompt = f.read().format(text=text, lang_line=_lang_line())
     model = db.load_settings().get("model_text")
 
     db.write("UPDATE materials SET status='generating', error_message=NULL "
              "WHERE id=?", (material_id,))
     db.bump_material_attempts(material_id)  # count BEFORE the call (crash-safe)
+    with open(prompt_path, encoding="utf-8") as f:
+        # K: build the term table BEFORE the cards, so the cards themselves — the
+        # primary study surface — set the vocabulary the summary and quiz then
+        # follow, instead of each surface inventing its own. Built AFTER the
+        # attempts bump: a glossary call that hangs or dies must not escape the
+        # poison-pill cap and leave this material stuck in 'generating'.
+        prompt = f.read().format(
+            text=text, lang_line=_lang_line() + _glossary_line(material_id))
     try:
         obj = _generate_with_retry(prompt, model)
     except ai.ClaudeError as e:
@@ -271,7 +284,10 @@ def recast_card(card_id, method):
         prompt = f.read().format(
             front=card["front"], back=card["back"],
             method_name=method["name"], instruction=method["instruction"],
-            lang_line=_lang_line())
+            # K: a recast rewrites a card in place — it must keep its material's
+            # vocabulary. build=False: recast is an interactive click, not a good
+            # moment to pay for a first glossary build.
+            lang_line=_lang_line() + _glossary_line(card["material_id"], build=False))
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     front = (obj.get("front") or "").strip()
     back = (obj.get("back") or "").strip()
@@ -324,9 +340,12 @@ def translate_card(card_id, target_lang):
     if isinstance(hit, dict) and (hit.get("front") or "").strip() and (hit.get("back") or "").strip():
         return {"lang": target_lang, "front": hit["front"], "back": hit["back"], "cached": True}
     with open(TRANSLATE_PROMPT, encoding="utf-8") as f:
-        prompt = f.read().format(target=TRANSLATE_TARGETS[target_lang],
-                                 term_rule=TERM_RULE,
-                                 front=card["front"], back=card["back"])
+        prompt = f.read().format(
+            target=TRANSLATE_TARGETS[target_lang],
+            # a translated card must match the terms its material's summary and
+            # quiz already use, so the same glossary feeds this path too
+            term_rule=TERM_RULE + _glossary_line(card["material_id"], build=False),
+            front=card["front"], back=card["back"])
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     front = (obj.get("front") or "").strip()
     back = (obj.get("back") or "").strip()
@@ -357,6 +376,100 @@ def _material_text_or_raise(material_id):
     if not text:
         raise ValueError("この教材はまだ文字起こしされていません（解析の完了後に使えます）")
     return m, text
+
+
+def _gloss_str(v):
+    """A model (or a hand-edited row) can put a number, list or null where a term
+    string belongs. Anything not a string is simply not a term."""
+    return v.strip() if isinstance(v, str) else ""
+
+
+def _parse_glossary(material):
+    """Read materials.glossary_json tolerantly -> list of {src, ja, en} dicts."""
+    if material is None or "glossary_json" not in material.keys():
+        return []
+    try:
+        obj = json.loads(material["glossary_json"] or "")
+    except (TypeError, ValueError):
+        return []
+    terms = obj.get("terms") if isinstance(obj, dict) else obj
+    if not isinstance(terms, list):
+        return []
+    out = []
+    for t in terms:
+        if not isinstance(t, dict):
+            continue
+        ja, en = _gloss_str(t.get("ja")), _gloss_str(t.get("en"))
+        if ja and en:
+            out.append({"src": _gloss_str(t.get("src")), "ja": ja, "en": en})
+    return out[:GLOSSARY_MAX_TERMS]
+
+
+def build_glossary(material_id, force=False):
+    """Phase K: derive ONE canonical term table for a material and cache it on the
+    row, so every later prompt about that material spells a term the same way.
+    Cache-first; returns the term list (possibly empty). Never raises for an
+    ordinary miss — a glossary is an enhancement, so callers degrade to no
+    glossary rather than failing the generation the user actually asked for."""
+    m = db.query_one("SELECT * FROM materials WHERE id=?", (material_id,))
+    if not m:
+        return []
+    if not force and "glossary_json" in m.keys() and m["glossary_json"]:
+        # A stored EMPTY term list still counts as built. Testing the parsed list
+        # for truthiness instead would re-run the AI call on every generation for
+        # any material whose glossary legitimately came back empty.
+        return _parse_glossary(m)
+    text = (m["extracted_text"] or "").strip()
+    if len(text) < GLOSSARY_MIN_CHARS:
+        return []   # deliberately NOT cached: the text may still be growing
+    with open(GLOSSARY_PROMPT, encoding="utf-8") as f:
+        prompt = f.read().format(material=text, limit=GLOSSARY_MAX_TERMS)
+    obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
+    terms = obj.get("terms") if isinstance(obj, dict) else None
+    clean = []
+    seen = set()
+    for t in (terms if isinstance(terms, list) else []):
+        if not isinstance(t, dict):
+            continue
+        ja, en = _gloss_str(t.get("ja")), _gloss_str(t.get("en"))
+        key = ja.lower() + "\x1f" + en.lower()
+        if not ja or not en or key in seen:
+            continue
+        seen.add(key)
+        clean.append({"src": _gloss_str(t.get("src")), "ja": ja, "en": en})
+        if len(clean) >= GLOSSARY_MAX_TERMS:
+            break
+    # A shapeless reply is cached as "built, no terms" like any other empty result:
+    # returning early without writing would re-run this AI call on every later
+    # generation for this material, forever.
+    db.write("UPDATE materials SET glossary_json=? WHERE id=?",
+             (json.dumps({"terms": clean}, ensure_ascii=False), material_id))
+    return clean
+
+
+def _glossary_line(material_id, build=True):
+    """The term-table directive appended to a material's prompts. Returns "" when
+    there is no glossary (or the AI is unavailable) so generation still works.
+
+    The guard is a bare Exception on purpose. This helper is called while building
+    someone else's prompt, and a glossary is only ever an enhancement — no failure
+    in here may 500 an endpoint whose contract is a 200 {"ok": false}, or strand a
+    material in 'generating' because it raised before the attempts counter bumped.
+    """
+    if not material_id:
+        return ""
+    try:
+        m = db.query_one("SELECT * FROM materials WHERE id=?", (material_id,))
+        terms = _parse_glossary(m)
+        if not terms and build:
+            terms = build_glossary(material_id)
+    except Exception:   # noqa: BLE001 — deliberate: never break the caller
+        return ""
+    if not terms:
+        return ""
+    pairs = "、".join(f"{t['en']}={t['ja']}" for t in terms)
+    return ("\n- この教材の用語表に必ず従う（ゆれを作らない）: " + pairs
+            + " / Use exactly these term pairs for this material.")
 
 
 def _clean_quiz_questions(raw, fmt):
@@ -407,8 +520,9 @@ def generate_quiz(material_id, fmt="written", count=None, scope=None, lang=None)
     scope_line = (f"特に次の範囲に集中する: {scope}" if scope
                   else "教材全体を範囲とする。")
     with open(QUIZ_PROMPT, encoding="utf-8") as f:
-        prompt = f.read().format(material=text, count=n, format_line=format_line,
-                                 scope_line=scope_line, lang_line=_lang_line(lang))
+        prompt = f.read().format(
+            material=text, count=n, format_line=format_line, scope_line=scope_line,
+            lang_line=_lang_line(lang) + _glossary_line(material_id))
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     questions = _clean_quiz_questions(obj.get("questions"), fmt)
     if not questions:
@@ -432,8 +546,9 @@ def generate_summary(material_id, scope=None, lang=None):
     scope_line = (f"特に次の範囲に集中する: {scope}" if scope
                   else "教材全体を対象とする。")
     with open(SUMMARY_PROMPT, encoding="utf-8") as f:
-        prompt = f.read().format(material=text, scope_line=scope_line,
-                                 lang_line=_lang_line(lang))
+        prompt = f.read().format(
+            material=text, scope_line=scope_line,
+            lang_line=_lang_line(lang) + _glossary_line(material_id))
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
     md = (obj.get("summary_md") or "").strip()
     if not md:
@@ -465,7 +580,9 @@ def generate_draft(material_id, instruction=None, scope=None, lang=None):
     instruction = (instruction or "").strip() or None
     scope = (scope or "").strip() or None
     with open(PROMPTS.get(stype, PROMPTS["memo"]), encoding="utf-8") as f:
-        prompt = f.read().format(text=text, lang_line=_lang_line(lang))
+        # K: same material, same term table as its summary/quiz/existing cards
+        prompt = f.read().format(
+            text=text, lang_line=_lang_line(lang) + _glossary_line(material_id))
     extra = []
     if scope:
         extra.append(f"範囲を次に限定する（この部分だけからカードを作る）：{scope}")

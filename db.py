@@ -582,6 +582,17 @@ def _migrate_j_translation(conn):
     _ensure_column(conn, "cards", "translation_json", "TEXT")
 
 
+def _migrate_k_glossary(conn):
+    # Phase K: one canonical term table per material, so every AI call about that
+    # material spells a term the same way. TERM_RULE only binds WITHIN a single
+    # output — each call is independent, so a summary could say 鋳型 while a card
+    # said テンプレート for the same concept. A nullable JSON blob
+    # ({"terms": [{"src": "...", "ja": "...", "en": "..."}]}) built once, lazily,
+    # and injected into later prompts. Purely additive: it feeds prompts only and
+    # never touches card front/back, so the D-5 content_hash is unaffected.
+    _ensure_column(conn, "materials", "glossary_json", "TEXT")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
@@ -591,6 +602,7 @@ MIGRATIONS = [
     ("i_summary_material", "I", _migrate_i_summary_material),
     ("i_folders", "I", _migrate_i_folders),
     ("j_card_translation", "J", _migrate_j_translation),
+    ("k_material_glossary", "K", _migrate_k_glossary),
 ]
 
 

@@ -142,8 +142,23 @@ def material_dict(r):
         "proposed_count": proposed_count,
         "attempts": attempts,
         "attempts_exhausted": bool(attempts >= db.max_material_attempts()),
+        # K: the material's canonical term table, once one has been built
+        "glossary": _glossary_terms(r),
         "created_at": r["created_at"],
     }
+
+
+def _glossary_terms(r):
+    """Phase K: expose materials.glossary_json as a list (never None) so the UI can
+    show the term table. Tolerant of an older row that predates the column."""
+    if "glossary_json" not in r.keys() or not r["glossary_json"]:
+        return []
+    try:
+        obj = json.loads(r["glossary_json"])
+    except (TypeError, ValueError):
+        return []
+    terms = obj.get("terms") if isinstance(obj, dict) else obj
+    return terms if isinstance(terms, list) else []
 
 
 def _due_from_date(s):
