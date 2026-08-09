@@ -70,6 +70,52 @@ function toast(msg, ok) {
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.add("hidden"), 2600);
 }
 
+// ---------- loading state (make async actions unmistakably "working") ----------
+// A button that clearly reads as busy: its label swaps for a spinner + busy text
+// and it disables. Returns restore() to call in a finally. Pair with busyBanner()
+// for long (20–60s) generations so the user never faces a silent, dead-looking UI.
+function btnBusy(btn, busyText) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.classList.add("is-loading");
+  btn.textContent = "";
+  btn.appendChild(el("span", "btn-spin"));
+  btn.appendChild(el("span", "", busyText || "処理中…"));
+  return () => { btn.classList.remove("is-loading"); btn.disabled = false; btn.textContent = orig; };
+}
+// A prominent inline "working…" banner (spinner + message) so nothing on screen
+// looks frozen while we wait for AI. Returns the node; caller removes it when done.
+function busyBanner(text) {
+  const b = el("div", "busy-banner");
+  b.appendChild(el("span", "btn-spin"));
+  const t = el("span", "busy-banner-t");
+  t.appendChild(el("div", "", text || "処理中…"));
+  t.appendChild(el("div", "busy-sub", "結果が出るまでお待ちください（このまま開いたままでOK）"));
+  b.appendChild(t);
+  return b;
+}
+
+// ---------- language helpers (auto / 日本語 / English for generated content) ----------
+const LANG_OPTS = [["auto", "自動（教材に合わせる）"], ["ja", "日本語"], ["en", "English"]];
+// Cheap client-side guess of a text's language, so a per-material picker can
+// DEFAULT to what the material is written in. Latin-heavy -> en, else ja.
+function detectLang(text) {
+  const s = (text || "").slice(0, 4000);
+  if (!s) return "auto";
+  const jp = (s.match(/[぀-ヿ㐀-鿿]/g) || []).length;
+  const latin = (s.match(/[A-Za-z]/g) || []).length;
+  if (jp === 0 && latin > 8) return "en";
+  if (jp > 0 && jp >= latin * 0.15) return "ja";
+  return "auto";
+}
+// A labelled <select> for the output language. `value` sets the initial choice.
+function langSelect(value) {
+  const sel = el("select", "sm-lang-sel");
+  LANG_OPTS.forEach(([v, label]) => { const o = el("option", "", label); o.value = v; sel.appendChild(o); });
+  sel.value = value || "auto";
+  sel.onclick = (e) => e.stopPropagation();
+  return sel;
+}
+
 // ---------- tabs ----------
 function switchTab(name) {
   S.tab = name;
@@ -329,6 +375,11 @@ async function loadReviewQueue(mode, opts = {}) {
     if (mode === "weak") cards = await api("/api/review/weak");
     else if (mode === "drill") cards = await api("/api/review/drill?" + new URLSearchParams(opts));
     else if (mode === "cram") { const d = await api("/api/review/cram?" + new URLSearchParams(opts)); cards = d.today; }
+    else if (mode === "material") {
+      // repeat material_id= for a merge across several materials (J)
+      const qs = (opts.material_ids || []).map((id) => "material_id=" + encodeURIComponent(id)).join("&");
+      cards = await api("/api/review/by-material?" + qs);
+    }
     else { const q = await api("/api/review/queue"); cards = q.cards; }
   } catch (e) { toast("読み込み失敗"); return; }
   S.review = { queue: cards, idx: 0, revealed: false, mode, label: opts.label || "" };
@@ -357,6 +408,45 @@ async function renderReviewHome(p) {
   }
   if (due > 0) { const b = el("button", "btn primary", "始める"); b.style.marginTop = "12px"; b.onclick = () => loadReviewQueue("normal"); c.appendChild(b); }
   p.appendChild(c);
+
+  // J — study by (study) material: pick one material's cards, or check several and
+  // merge them into one session. Shown first so "review by material" is front-and-
+  // center, per the request.
+  let revMats = [];
+  try { revMats = await api("/api/review/materials"); } catch (e) {}
+  if (revMats.length) {
+    p.appendChild(el("div", "section-title", "教材から選んで復習"));
+    const mc = el("div", "card rev-mat-card");
+    mc.appendChild(el("div", "rev-mat-hint", "教材ごとに復習できます。複数チェックすると、まとめて1セッションにできます。"));
+    const sel = new Set();
+    const startMerge = el("button", "btn small primary", "選択した教材をまとめて復習");
+    startMerge.disabled = true;
+    revMats.forEach((mm) => {
+      const token = mm.material_id == null ? "none" : String(mm.material_id);
+      const row = el("label", "rev-mat-row");
+      const cb = el("input", "rev-mat-cb"); cb.type = "checkbox"; cb.value = token;
+      cb.onchange = () => { cb.checked ? sel.add(token) : sel.delete(token); startMerge.disabled = sel.size === 0; };
+      row.appendChild(cb);
+      const body = el("div", "rev-mat-body");
+      body.appendChild(el("div", "rmm-title", mm.label));
+      const meta = [];
+      if (mm.course_name) meta.push(mm.course_name);
+      if (mm.due_count) meta.push("復習 " + mm.due_count);
+      if (mm.new_count) meta.push("新規 " + mm.new_count);
+      meta.push("計 " + mm.total);
+      body.appendChild(el("div", "rmm-meta", meta.join(" ・ ")));
+      row.appendChild(body);
+      const go = el("button", "btn small ghost", "この教材"); go.type = "button";
+      go.onclick = (e) => { e.preventDefault(); e.stopPropagation(); loadReviewQueue("material", { material_ids: [token], label: mm.label }); };
+      row.appendChild(go);
+      mc.appendChild(row);
+    });
+    const foot = el("div", "rev-mat-foot");
+    startMerge.onclick = () => { if (sel.size) loadReviewQueue("material", { material_ids: [...sel], label: `${sel.size}教材をまとめて` }); };
+    foot.appendChild(startMerge);
+    mc.appendChild(foot);
+    p.appendChild(mc);
+  }
 
   // test mode (cram) — pick an upcoming exam
   let exams = [];
@@ -403,12 +493,12 @@ const PRODUCE_TYPES = new Set(["produce", "explain", "interpret", "predict", "co
 const STEP_TYPES = new Set(["steps", "worked"]);
 const CLOZE_RE = /_{2,}|\{\{[^}]*\}\}|｛｛[^｝]*｝｝/;
 function _lines(s) { return (s || "").split("\n").map((x) => x.trim()).filter(Boolean); }
-function clozeText(card, filled) {
+function clozeText(frontText, backText, filled) {
   // Replacer FUNCTION (not a string) so a "$" in the answer isn't read as a
   // regex $-special. Keep /g: every blank must render the same way, else a 2nd
   // {{marker}} would leak its answer literally in the unfilled state.
-  const fill = filled ? "【" + (card.back || "？") + "】" : "____";
-  return (card.front || "").replace(new RegExp(CLOZE_RE.source, "g"), () => fill);
+  const fill = filled ? "【" + (backText || "？") + "】" : "____";
+  return (frontText || "").replace(new RegExp(CLOZE_RE.source, "g"), () => fill);
 }
 function revealLabel(ct) {
   if (PRODUCE_TYPES.has(ct) || ct === "compute") return "答え合わせ";
@@ -418,19 +508,52 @@ function revealLabel(ct) {
 function renderCard(p) {
   const r = S.review;
   const card = r.queue[r.idx];
-  const ct = card.card_type || "qa";
-  const mj = card.media_json || {};
-  const isCloze = ct === "cloze" && CLOZE_RE.test(card.front || "");
+  r.trans = r.trans || {};
+  r.transOff = r.transOff || new Set();
+  // J — language flip. 全部翻訳 (r.translateAll, a BOOLEAN) shows every card in the
+  // opposite of ITS OWN language, so a mixed JA/EN deck flips each card correctly
+  // (never same-language). A per-card 🌐 overrides one card; r.transOff opts a card
+  // out while 全部翻訳 is on. A translated card renders as plain Q&A (modality extras
+  // dropped). _transErr guards against an infinite retry loop when a translate fails.
+  const target = detectLang(card.front) === "ja" ? "en" : "ja";
+  if (r.translateAll && !r.trans[card.id] && !r.transOff.has(card.id) && card._transErr !== target) {
+    const cached = card.translation && card.translation[target];
+    if (cached && cached.front && cached.back)
+      r.trans[card.id] = { lang: target, front: cached.front, back: cached.back };
+    else ensureTranslation(card, target);   // async -> re-renders when done
+  }
+  const tr = r.trans[card.id] || null;
+  const dispFront = tr ? tr.front : card.front;
+  const dispBack = tr ? tr.back : card.back;
+  const ct = tr ? "qa" : (card.card_type || "qa");
+  const mj = tr ? {} : (card.media_json || {});
+  const isCloze = ct === "cloze" && CLOZE_RE.test(dispFront || "");
   const wrap = el("div", "review-wrap");
 
   const top = el("div", "review-top");
   top.appendChild(el("span", "pill", card.why_now));
   if (card.course_name) top.appendChild(el("span", "pill " + (card.subject_type || "other"), card.course_name));
   top.appendChild(el("span", "review-progress", `${r.idx + 1} / ${r.queue.length}${r.label ? " ・ " + r.label : ""}`));
+  // language flip: per-card 🌐 (toggles this card) + a session 全部翻訳 toggle.
+  const langWrap = el("div", "rc-langs");
+  const flip = el("button", "btn small ghost lang-flip",
+    tr ? "🌐 原文に戻す" : (detectLang(card.front) === "ja" ? "🌐 English" : "🌐 日本語"));
+  flip.onclick = (e) => { e.stopPropagation(); flipCardLang(card); };
+  langWrap.appendChild(flip);
+  const allBtn = el("button", "btn small ghost lang-all" + (r.translateAll ? " on" : ""), r.translateAll ? "✓ 全部翻訳中" : "🌐 全部翻訳");
+  allBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (r.translateAll) { r.translateAll = false; r.trans = {}; r.transOff = new Set(); }   // off -> clear all
+    else { r.translateAll = true; r.transOff = new Set(); }
+    renderReview();
+  };
+  langWrap.appendChild(allBtn);
+  if (card._translating) langWrap.appendChild(el("span", "rc-tr-busy", "翻訳中…"));
+  top.appendChild(langWrap);
   wrap.appendChild(top);
 
   const face = el("div", "review-card");
-  face.appendChild(el("div", "review-front", isCloze ? clozeText(card, r.revealed) : card.front));
+  face.appendChild(el("div", "review-front", isCloze ? clozeText(dispFront, dispBack, r.revealed) : dispFront));
 
   if (!r.revealed) {
     if (PRODUCE_TYPES.has(ct)) {
@@ -462,7 +585,7 @@ function renderCard(p) {
       const items = (Array.isArray(mj.items) && mj.items.length) ? mj.items : _lines(card.back);
       const box = el("div", "rc-list"); items.forEach((s) => { const lab = el("label", "rc-check"); const cb = el("input"); cb.type = "checkbox"; lab.appendChild(cb); lab.appendChild(el("span", "", s)); box.appendChild(lab); }); face.appendChild(box);
     } else if (!isCloze) {
-      face.appendChild(el("div", "review-back", card.back));
+      face.appendChild(el("div", "review-back", dispBack));
     }
     // compute shows the answer (back) above; add the worked steps if provided.
     if (ct === "compute" && Array.isArray(mj.steps) && mj.steps.length) {
@@ -521,6 +644,48 @@ async function grade(g) {
   r.idx++; r.revealed = false; r.draft = "";
   await refreshMeta();
   renderReview();
+}
+
+// J — flip ONE card between its original and the opposite language (ja<->en).
+// Cached translations (card.translation[lang], also refreshed onto the object here)
+// make a re-flip instant; the first flip calls the AI once.
+async function flipCardLang(card) {
+  const r = S.review; r.trans = r.trans || {}; r.transOff = r.transOff || new Set();
+  if (r.trans[card.id]) {
+    delete r.trans[card.id];
+    if (r.translateAll) r.transOff.add(card.id);   // opt this card out of 全部翻訳
+    renderReview(); return;
+  }
+  r.transOff.delete(card.id);                       // re-including it
+  const target = detectLang(card.front) === "ja" ? "en" : "ja";
+  const cached = card.translation && card.translation[target];
+  if (cached && cached.front && cached.back) {
+    r.trans[card.id] = { lang: target, front: cached.front, back: cached.back };
+    renderReview(); return;
+  }
+  await ensureTranslation(card, target, { manual: true });
+}
+
+// Fetch+cache a card's translation into `target`; applies it to the current review
+// session (r.trans) and re-renders. `_translating` guards double-fetches (the 全部
+// 翻訳 auto-trigger re-enters across renders). It's applied only if STILL wanted on
+// resolve — manual flips always, auto only while 全部翻訳 is on and the card isn't
+// opted out — so turning translation off mid-request doesn't snap the card back.
+async function ensureTranslation(card, target, opts) {
+  opts = opts || {};
+  if (card._translating) return;
+  card._translating = true;
+  try {
+    const res = await api(`/api/cards/${card.id}/translate`, { method: "POST", body: JSON.stringify({ lang: target }) });
+    if (!res.ok) { card._transErr = target; toast(res.message || "翻訳に失敗しました"); return; }
+    delete card._transErr;
+    card.translation = card.translation || {};
+    card.translation[target] = { front: res.translation.front, back: res.translation.back };
+    const r = S.review; r.trans = r.trans || {};
+    const wanted = opts.manual || (r.translateAll && !(r.transOff && r.transOff.has(card.id)));
+    if (wanted) r.trans[card.id] = { lang: target, front: res.translation.front, back: res.translation.back };
+  } catch (e) { card._transErr = target; if (!opts.silent) toast("翻訳に失敗: " + e.message); }
+  finally { card._translating = false; if (S.tab === "review") renderReview(); }
 }
 
 // ---------- MATERIALS (Phase 3) ----------
@@ -715,16 +880,85 @@ function matTile(m) {
   return t;
 }
 
+// The material workspace. On a wide screen it lays out as three panes — the FILE
+// on the left, the 文字起こし (transcript) in the middle, and the study OPTIONS
+// (top-right) with the flashcards scrolling below them — so pressing 出典を
+// ハイライト shows the file and its source quote side by side. It collapses to a
+// single scroll on narrow screens. Failed / in-flight materials keep the simpler
+// single-column view. Every zone below is appended to fileZone/transcriptZone/
+// optionsZone/cardsZone, then assembled per layout at the end.
 async function openMaterial(mid, highlight) {
   let m;
   try { m = await api(`/api/materials/${mid}`); } catch (e) { toast("読み込み失敗"); return; }
   const ov = el("div", "modal-overlay");
-  const box = el("div", "modal");
+  const box = el("div", "modal mat-modal");
   const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
   box.appendChild(close);
-  box.appendChild(el("h3", "", m.summary || "教材"));
-  if (inFlight(m.status)) box.appendChild(buildProgress(m));
-  else box.appendChild(el("div", "mat-badge inline " + m.status, STAGE[m.status] || m.status));
+
+  const cards = m.cards || [];
+  const trFull = m.extracted_text || "";
+  const hasTranscript = !!trFull.trim();
+  const settled = m.status !== "failed" && !inFlight(m.status);
+  const useWorkspace = settled && hasTranscript;   // 3-pane view only when there's a file + transcript to study
+
+  // header (title + status)
+  const head = el("div", "mat-head");
+  head.appendChild(el("h3", "mat-head-title", m.summary || "教材"));
+  if (inFlight(m.status)) head.appendChild(buildProgress(m));
+  else head.appendChild(el("div", "mat-badge inline " + m.status, STAGE[m.status] || m.status));
+  box.appendChild(head);
+
+  // ---- transcript element + E5 quote-highlight — built once, placed per layout ----
+  const anyLoc = cards.some((c) => c.source_loc || c.source_quote);
+  let trPre = null;
+  if (hasTranscript) { trPre = el("pre", "guide-md tr-pre"); trPre.textContent = trFull; }
+  function findSpan(loc) {
+    if (loc && Number.isInteger(loc.char_start) && Number.isInteger(loc.char_end)
+        && loc.char_end > loc.char_start && loc.char_end <= trFull.length)
+      return [loc.char_start, loc.char_end];
+    const q = (loc && loc.quote) || (typeof loc === "string" ? loc : "");
+    if (!q) return null;
+    const i = trFull.indexOf(q);
+    if (i >= 0) return [i, i + q.length];
+    const esc = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    try { const mm = new RegExp(esc).exec(trFull); if (mm) return [mm.index, mm.index + mm[0].length]; } catch (e) {}
+    return null;
+  }
+  function highlightQuote(loc) {
+    if (!trPre) { toast("文字起こしがありません"); return; }
+    const det = trPre.closest("details"); if (det) det.open = true;
+    const span = findSpan(loc);
+    if (!span) { trPre.textContent = trFull; toast("該当箇所が見つかりませんでした"); return; }
+    trPre.textContent = "";
+    trPre.appendChild(document.createTextNode(trFull.slice(0, span[0])));
+    const mark = el("mark", "tr-hit", trFull.slice(span[0], span[1]));
+    trPre.appendChild(mark);
+    trPre.appendChild(document.createTextNode(trFull.slice(span[1])));
+    mark.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  const addLoc = (node, c) => {
+    if (c.source_loc || c.source_quote) {
+      node.classList.add("locatable");
+      node.title = "クリックで出典をハイライト";
+      node.appendChild(el("div", "cp-locate", "📍 出典をハイライト"));
+      node.onclick = () => highlightQuote(c.source_loc || c.source_quote);
+    }
+    return node;
+  };
+
+  // ---- ZONES ----
+  const fileZone = el("div", "mw-file");
+  fileZone.appendChild(buildViewer(m));
+
+  const optionsZone = el("div", "mw-options");
+  // Phase I — study modes (options) live top-right; need transcription + a settled material.
+  if (useWorkspace) optionsZone.appendChild(studyModesSection(m, ov));
+
+  const cardsZone = el("div", "mw-cards");
+  // `box2` is the container the rest of this function appends to (failure box,
+  // proposal gate, cards, guides, add-card, footer). In the workspace it's the
+  // right-hand cards column; otherwise the modal body directly.
+  const box2 = cardsZone;
 
   if (m.status === "failed") {
     // Explain the failure: cause + how to succeed + a rough (heuristic) success
@@ -769,64 +1003,7 @@ async function openMaterial(mid, highlight) {
       actions.appendChild(mk("ghost", "手動で入力する", manFn));
     }
     err.appendChild(actions);
-    box.appendChild(err);
-  }
-
-  box.appendChild(buildViewer(m));
-
-  // E5 — transcription panel + quote highlight = "完全解析": show WHERE in the
-  // file each card came from. Clicking a located card highlights its verbatim
-  // quote here (offsets when available, else a whitespace-tolerant search).
-  const cards = m.cards || [];
-  const anyLoc = cards.some((c) => c.source_loc || c.source_quote);
-  let trPre = null;
-  const trFull = m.extracted_text || "";
-  if (trFull) {
-    const det = el("details", "extract-det mat-transcript");
-    det.open = anyLoc;
-    det.appendChild(el("summary", "", "文字起こし（カードの出典）"));
-    trPre = el("pre", "guide-md tr-pre"); trPre.textContent = trFull;
-    det.appendChild(trPre);
-    box.appendChild(det);
-  }
-  function findSpan(loc) {
-    if (loc && Number.isInteger(loc.char_start) && Number.isInteger(loc.char_end)
-        && loc.char_end > loc.char_start && loc.char_end <= trFull.length)
-      return [loc.char_start, loc.char_end];
-    const q = (loc && loc.quote) || (typeof loc === "string" ? loc : "");
-    if (!q) return null;
-    const i = trFull.indexOf(q);
-    if (i >= 0) return [i, i + q.length];
-    const esc = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    try { const mm = new RegExp(esc).exec(trFull); if (mm) return [mm.index, mm.index + mm[0].length]; } catch (e) {}
-    return null;
-  }
-  function highlightQuote(loc) {
-    if (!trPre) { toast("文字起こしがありません"); return; }
-    const det = trPre.closest("details"); if (det) det.open = true;
-    const span = findSpan(loc);
-    if (!span) { trPre.textContent = trFull; toast("該当箇所が見つかりませんでした"); return; }
-    trPre.textContent = "";
-    trPre.appendChild(document.createTextNode(trFull.slice(0, span[0])));
-    const mark = el("mark", "tr-hit", trFull.slice(span[0], span[1]));
-    trPre.appendChild(mark);
-    trPre.appendChild(document.createTextNode(trFull.slice(span[1])));
-    mark.scrollIntoView({ block: "center", behavior: "smooth" });
-  }
-  const addLoc = (node, c) => {
-    if (c.source_loc || c.source_quote) {
-      node.classList.add("locatable");
-      node.title = "クリックで出典をハイライト";
-      node.appendChild(el("div", "cp-locate", "📍 出典をハイライト"));
-      node.onclick = () => highlightQuote(c.source_loc || c.source_quote);
-    }
-    return node;
-  };
-
-  // Phase I — study modes: pick HOW to study this material (flashcards below,
-  // quiz + summary here). Needs transcription text and a settled material.
-  if ((m.extracted_text || "").trim() && m.status !== "failed" && !inFlight(m.status)) {
-    box.appendChild(studyModesSection(m, ov));
+    box2.appendChild(err);
   }
 
   // G1: proposal / confirmation gate — proposed cards await approval (nothing
@@ -878,26 +1055,26 @@ async function openMaterial(mid, highlight) {
     };
     pickRow.appendChild(pb); pick.appendChild(pickRow);
     panel.appendChild(pick);
-    box.appendChild(panel);
+    box2.appendChild(panel);
   }
 
   // already-approved cards (new/review/suspended): generated vs extracted grouping
-  const settled = cards.filter((c) => c.state !== "proposed");
-  const lowConf = settled.filter((c) => c.confidence === "low");
-  const normal = settled.filter((c) => c.confidence !== "low");
+  const settledCards = cards.filter((c) => c.state !== "proposed");
+  const lowConf = settledCards.filter((c) => c.confidence === "low");
+  const normal = settledCards.filter((c) => c.confidence !== "low");
   const withCtl = (c, low) => {
     const n = addLoc(cardPreview(c, low), c);
     n.appendChild(recastRow(c, () => { ov.remove(); openMaterial(m.id); }));
     return n;
   };
-  if (lowConf.length) box.appendChild(el("div", "section-title", `要確認 ${lowConf.length}件`));
-  lowConf.forEach((c) => box.appendChild(withCtl(c, true)));
-  if (normal.length) box.appendChild(el("div", "section-title", `カード ${normal.length}枚`));
-  normal.forEach((c) => box.appendChild(withCtl(c, false)));
+  if (lowConf.length) box2.appendChild(el("div", "section-title", `要確認 ${lowConf.length}件`));
+  lowConf.forEach((c) => box2.appendChild(withCtl(c, true)));
+  if (normal.length) box2.appendChild(el("div", "section-title", `カード ${normal.length}枚`));
+  normal.forEach((c) => box2.appendChild(withCtl(c, false)));
 
   if (m.guides && m.guides.length) {
-    box.appendChild(el("div", "section-title", "要点まとめ"));
-    const g = el("pre", "guide-md"); g.textContent = m.guides[0].content_md; box.appendChild(g);
+    box2.appendChild(el("div", "section-title", "要点まとめ"));
+    const g = el("pre", "guide-md"); g.textContent = m.guides[0].content_md; box2.appendChild(g);
   }
 
   // E4 — manually add a review card sourced from this material. The optional
@@ -915,7 +1092,7 @@ async function openMaterial(mid, highlight) {
   addWrap.appendChild(addBody);
   smartBtn.onclick = () => openSmartAdd(m, ov, addBody, trPre);
   manualBtn.onclick = () => openManualAdd(m, ov, addBody);
-  box.appendChild(addWrap);
+  box2.appendChild(addWrap);
 
   const foot = el("div", "add-row end");
   const regen = el("button", "btn small ghost", "再生成");
@@ -923,7 +1100,30 @@ async function openMaterial(mid, highlight) {
   const del = el("button", "btn small danger", "削除");
   del.onclick = async () => { if (confirm("この教材を削除しますか？")) { await api(`/api/materials/${mid}`, { method: "DELETE" }); ov.remove(); await refreshMeta(); renderMaterials(); } };
   foot.appendChild(regen); foot.appendChild(del);
-  box.appendChild(foot);
+  box2.appendChild(foot);
+
+  // ---- ASSEMBLE per layout ----
+  if (useWorkspace) {
+    const ws = el("div", "mat-workspace");
+    const trZone = el("div", "mw-transcript");
+    trZone.appendChild(el("div", "mw-h", "文字起こし（カードの出典）"));
+    const trWrap = el("div", "tr-wrap"); trWrap.appendChild(trPre); trZone.appendChild(trWrap);
+    ws.appendChild(fileZone);
+    ws.appendChild(optionsZone);
+    ws.appendChild(trZone);
+    ws.appendChild(cardsZone);
+    box.appendChild(ws);
+  } else {
+    // failed / in-flight / transcript-less: simpler single column
+    box.appendChild(fileZone);
+    if (hasTranscript) {
+      const det = el("details", "extract-det mat-transcript"); det.open = anyLoc;
+      det.appendChild(el("summary", "", "文字起こし（カードの出典）"));
+      det.appendChild(trPre);
+      box.appendChild(det);
+    }
+    box.appendChild(cardsZone);
+  }
 
   ov.appendChild(box); ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
   document.body.appendChild(ov);
@@ -995,6 +1195,15 @@ function setActiveChip(chips, chip) {
   chip.classList.add("active");
 }
 
+// Default output language for on-demand generation from THIS material: honor a
+// globally-forced language, else fall back to the material's own detected language
+// (so an English material defaults to English — the #7 fix).
+function defaultGenLang(m) {
+  const g = (S.meta && S.meta.content_lang) || "auto";
+  if (g === "ja" || g === "en") return g;
+  return detectLang(m && m.extracted_text);
+}
+
 // ---- Quiz setup panel (inside the material modal) ----
 function openQuizPanel(m, ov, host) {
   host.innerHTML = "";
@@ -1026,35 +1235,42 @@ function openQuizPanel(m, ov, host) {
   scope.placeholder = "例：第3章／pp.10-14／光合成の部分 だけ など";
   form.appendChild(scope);
 
+  form.appendChild(el("div", "sm-flabel", "出題する言語"));
+  const langRow = el("div", "sm-lang");
+  const langSel = langSelect(defaultGenLang(m));
+  langRow.appendChild(langSel);
+  form.appendChild(langRow);
+
   const actions = el("div", "sm-actions");
   const gen = el("button", "btn small primary", m.quiz ? "作り直す" : "クイズを作る");
-  const note = el("div", "sm-gennote hidden", "生成中…（20〜60秒ほどかかることがあります）");
-  gen.onclick = () => runQuizGen(m, ov, host, { format: fmt.value(), scope: scope.value.trim() || null }, gen, note);
+  gen.onclick = () => runQuizGen(m, ov, host, { format: fmt.value(), scope: scope.value.trim() || null, lang: langSel.value }, gen);
   actions.appendChild(gen);
   if (m.quiz) {
     const more = el("button", "btn small ghost", "＋10問で作り直す");
     more.onclick = () => runQuizGen(m, ov, host,
-      { format: m.quiz.format, scope: m.quiz.scope_desc || null, count: (m.quiz.questions || []).length + 10 }, more, note);
+      { format: m.quiz.format, scope: m.quiz.scope_desc || null, count: (m.quiz.questions || []).length + 10, lang: langSel.value }, more);
     actions.appendChild(more);
   }
-  form.appendChild(actions); form.appendChild(note);
+  form.appendChild(actions);
   panel.appendChild(form);
   host.appendChild(panel);
 }
 
-async function runQuizGen(m, ov, host, body, btn, note) {
-  btn.disabled = true; if (note) note.classList.remove("hidden");
+async function runQuizGen(m, ov, host, body, btn) {
+  const restore = btnBusy(btn, "生成中…");
+  const banner = busyBanner("クイズを作成中…（20〜60秒ほどかかることがあります）");
+  host.appendChild(banner);
   try {
     const r = await api(`/api/materials/${m.id}/quiz`, { method: "POST", body: JSON.stringify(body) });
     if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
     m.quiz = r.quiz;
     toast(`${r.quiz.questions.length}問のクイズを作りました`, true);
-    openQuizPanel(m, ov, host);
+    openQuizPanel(m, ov, host);   // rebuilds host (clears the banner)
     openQuizRunner(r.quiz, m);
   } catch (e) {
     toast("生成に失敗: " + e.message);
   } finally {
-    btn.disabled = false; if (note) note.classList.add("hidden");
+    banner.remove(); restore();
   }
 }
 
@@ -1215,21 +1431,29 @@ function openSummaryPanel(m, ov, host) {
   scope.placeholder = "例：第3章 だけ／全体 など";
   if (m.summary_guide && m.summary_guide.scope_desc) scope.value = m.summary_guide.scope_desc;
   form.appendChild(scope);
+
+  form.appendChild(el("div", "sm-flabel", "まとめの言語"));
+  const langRow = el("div", "sm-lang");
+  const langSel = langSelect(defaultGenLang(m));
+  langRow.appendChild(langSel);
+  form.appendChild(langRow);
+
   const actions = el("div", "sm-actions");
   const gen = el("button", "btn small primary", m.summary_guide ? "作り直す" : "まとめを作る");
-  const note = el("div", "sm-gennote hidden", "生成中…（10〜40秒ほどかかることがあります）");
   gen.onclick = async () => {
-    gen.disabled = true; note.classList.remove("hidden");
+    const restore = btnBusy(gen, "生成中…");
+    const banner = busyBanner("まとめを作成中…（10〜40秒ほどかかることがあります）");
+    form.appendChild(banner);
     try {
-      const r = await api(`/api/materials/${m.id}/summary`, { method: "POST", body: JSON.stringify({ scope: scope.value.trim() || null }) });
+      const r = await api(`/api/materials/${m.id}/summary`, { method: "POST", body: JSON.stringify({ scope: scope.value.trim() || null, lang: langSel.value }) });
       if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
       m.summary_guide = r.summary;
       render(r.summary);
       toast("まとめを作成しました", true);
     } catch (e) { toast("生成に失敗: " + e.message); }
-    finally { gen.disabled = false; note.classList.add("hidden"); }
+    finally { banner.remove(); restore(); }
   };
-  actions.appendChild(gen); form.appendChild(actions); form.appendChild(note);
+  actions.appendChild(gen); form.appendChild(actions);
   panel.appendChild(form);
   host.appendChild(panel);
 }
@@ -1249,20 +1473,30 @@ function openSmartAdd(m, ov, host, trPre) {
   panel.appendChild(scope);
   const rangeRow = el("div", "sm-actions");
   const useSel = el("button", "btn small ghost", "文字起こしで選択した部分を使う");
-  useSel.onclick = () => {
+  // Clicking a <button> steals focus and CLEARS the page text selection BEFORE the
+  // click handler runs — so reading getSelection() in onclick always saw empty (the
+  // "button does nothing" bug). Grab the selection on mousedown/touchstart (and
+  // preventDefault so the selection survives), then act on the captured value.
+  let grabbed = null;
+  const grabSel = () => {
     const s = window.getSelection ? window.getSelection() : null;
     const txt = (s && s.toString() || "").trim();
-    if (!txt) { toast("下の「文字起こし」の中で範囲をドラッグ選択してから押してください"); return; }
     // require BOTH ends of the range inside the transcription, so a drag that
     // starts or ends outside it can't slip non-transcription text into the scope.
-    if (trPre && s.anchorNode && s.focusNode &&
-        trPre.contains(s.anchorNode) && trPre.contains(s.focusNode)) {
-      scope.value = txt.length > 120 ? txt.slice(0, 120) + "…" : txt;
-      toast("選択範囲を設定しました", true);
-    } else { toast("「文字起こし」の中だけを選択してください"); }
+    const inside = !!(trPre && s && s.anchorNode && s.focusNode &&
+      trPre.contains(s.anchorNode) && trPre.contains(s.focusNode));
+    grabbed = txt ? { txt, inside } : null;
+  };
+  useSel.addEventListener("mousedown", (e) => { e.preventDefault(); grabSel(); });
+  useSel.addEventListener("touchstart", grabSel, { passive: true });
+  useSel.onclick = () => {
+    if (!grabbed) { toast("下の「文字起こし」の中で範囲をドラッグ選択してから押してください"); return; }
+    if (!grabbed.inside) { toast("「文字起こし」の中だけを選択してください"); return; }
+    scope.value = grabbed.txt.length > 120 ? grabbed.txt.slice(0, 120) + "…" : grabbed.txt;
+    toast("選択範囲を設定しました", true);
   };
   const whole = el("button", "btn small ghost", "全体にする");
-  whole.onclick = () => { scope.value = ""; toast("範囲を全体にしました"); };
+  whole.onclick = () => { scope.value = ""; toast("範囲を全体にしました（教材全体）", true); };
   rangeRow.appendChild(useSel); rangeRow.appendChild(whole);
   panel.appendChild(rangeRow);
 
@@ -1271,15 +1505,22 @@ function openSmartAdd(m, ov, host, trPre) {
   instr.placeholder = "例：計算練習を多めに／用語中心で／英文の穴埋めを作って など";
   panel.appendChild(instr);
 
+  panel.appendChild(el("div", "sm-flabel", "カードの言語"));
+  const langRow = el("div", "sm-lang");
+  const langSel = langSelect(defaultGenLang(m));
+  langRow.appendChild(langSel);
+  panel.appendChild(langRow);
+
   const actions = el("div", "sm-actions");
   const gen = el("button", "btn small primary", "この内容で作る");
-  const note = el("div", "sm-gennote hidden", "解析中…（20〜60秒ほどかかることがあります）");
   gen.onclick = async () => {
-    gen.disabled = true; note.classList.remove("hidden");
+    const restore = btnBusy(gen, "解析中…");
+    const banner = busyBanner("この教材を解析してカードを作成中…（20〜60秒ほどかかることがあります）");
+    panel.appendChild(banner);
     try {
       const r = await api(`/api/materials/${m.id}/draft`, {
         method: "POST",
-        body: JSON.stringify({ scope: scope.value.trim() || null, instruction: instr.value.trim() || null }),
+        body: JSON.stringify({ scope: scope.value.trim() || null, instruction: instr.value.trim() || null, lang: langSel.value }),
       });
       if (!r.ok) { toast(r.message || "生成に失敗しました"); return; }
       if (!r.added) { toast("新しいカードは作られませんでした（範囲や指示を変えて試してください）"); return; }
@@ -1287,9 +1528,9 @@ function openSmartAdd(m, ov, host, trPre) {
       toast(`${tp}の内容で${r.added}項目を用意しました。下で確認して承認してください。`, true);
       ov.remove(); openMaterial(m.id);        // reopen -> proposal gate shows the drafts
     } catch (e) { toast("生成に失敗: " + e.message); }
-    finally { gen.disabled = false; note.classList.add("hidden"); }
+    finally { banner.remove(); restore(); }
   };
-  actions.appendChild(gen); panel.appendChild(actions); panel.appendChild(note);
+  actions.appendChild(gen); panel.appendChild(actions);
   host.appendChild(panel);
   scope.focus();
 }
@@ -1419,6 +1660,26 @@ function cardPreview(c, low) {
   if (c.topic) tags.appendChild(el("span", "pill", c.topic));
   d.appendChild(tags);
   if (c.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + c.source_quote + "」"; d.appendChild(q); }
+  // J — per-card translate toggle: shows the card in the other language beneath.
+  const trBox = el("div", "cp-trans hidden");
+  const trBtn = el("button", "btn small ghost cp-trans-btn", "🌐 翻訳");
+  const showTrans = (t) => { trBox.innerHTML = ""; trBox.appendChild(el("div", "cp-front", t.front)); trBox.appendChild(el("div", "cp-back", t.back)); trBox.classList.remove("hidden"); };
+  trBtn.onclick = async (e) => {
+    e.stopPropagation();
+    if (!trBox.classList.contains("hidden")) { trBox.classList.add("hidden"); return; }   // toggle off
+    const target = detectLang(c.front) === "ja" ? "en" : "ja";
+    const cached = c.translation && c.translation[target];
+    if (cached && cached.front && cached.back) { showTrans(cached); return; }
+    const restore = btnBusy(trBtn, "翻訳中…");
+    try {
+      const res = await api(`/api/cards/${c.id}/translate`, { method: "POST", body: JSON.stringify({ lang: target }) });
+      if (!res.ok) { toast(res.message || "翻訳に失敗しました"); return; }
+      c.translation = c.translation || {}; c.translation[target] = { front: res.translation.front, back: res.translation.back };
+      showTrans(res.translation);
+    } catch (err) { toast("翻訳に失敗: " + err.message); }
+    finally { restore(); }
+  };
+  d.appendChild(trBtn); d.appendChild(trBox);
   return d;
 }
 
@@ -1742,13 +2003,13 @@ function recastRow(card, refresh) {
   row.appendChild(sel);
   const btn = el("button", "btn small ghost", "この学び方にする");
   btn.onclick = async () => {
-    btn.disabled = true; btn.textContent = "AIで変換中…";
+    const restore = btnBusy(btn, "AIで変換中…");
     try {
       const r = await api(`/api/cards/${card.id}/recast`, { method: "POST", body: JSON.stringify({ method: sel.value }) });
       if (r.ok) { toast("学び方を変えました", true); if (refresh) refresh(); return; }
       toast(r.message || "変換に失敗");
     } catch (e) { toast("変換に失敗: " + e.message); }
-    btn.disabled = false; btn.textContent = "この学び方にする";
+    finally { restore(); }
   };
   row.appendChild(btn);
   const mk = el("button", "btn small ghost", "＋独自");

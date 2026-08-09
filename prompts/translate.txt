@@ -1,0 +1,15 @@
+You are a translator for study flashcards. Translate the card below into {target}.
+
+Rules:
+- Preserve the meaning precisely; translate naturally, not word-for-word.
+- Keep any fill-in-the-blank markers (___ or {{{{ }}}}), LaTeX ($...$), inline code, numbers and simple formatting intact.
+- Do NOT add explanations, notes, or any extra content — translate ONLY the given text.
+- If the text is already in {target}, return it as-is.
+- Use the established term in the target language when one exists.
+
+Output ONE JSON object only (no preamble, no code fence):
+{{"front": "the front, translated into {target}", "back": "the back, translated into {target}"}}
+
+Card to translate:
+front: {front}
+back: {back}

@@ -573,6 +573,15 @@ def _migrate_i_folders(conn):
     _ensure_column(conn, "docs", "folder_id", "INTEGER")
 
 
+def _migrate_j_translation(conn):
+    # Phase J: cached JA/EN translations of a card's front/back so a learner can flip
+    # a card's language while reviewing. A nullable JSON blob keyed by lang code
+    # ({"ja": {"front","back"}, "en": {"front","back"}}), EXCLUDED from the D-5
+    # content_hash — front/back stay the card's identity, so translating never
+    # dedups, reflows, or resets SRS state.
+    _ensure_column(conn, "cards", "translation_json", "TEXT")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
@@ -581,6 +590,7 @@ MIGRATIONS = [
     ("i_quizzes", "I", _migrate_i_quizzes),
     ("i_summary_material", "I", _migrate_i_summary_material),
     ("i_folders", "I", _migrate_i_folders),
+    ("j_card_translation", "J", _migrate_j_translation),
 ]
 
 

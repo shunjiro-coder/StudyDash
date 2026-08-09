@@ -30,6 +30,10 @@ PROMPTS = {
 RECAST_PROMPT = os.path.join(BASE_DIR, "prompts", "recast.txt")
 QUIZ_PROMPT = os.path.join(BASE_DIR, "prompts", "quiz.txt")
 SUMMARY_PROMPT = os.path.join(BASE_DIR, "prompts", "summary.txt")
+TRANSLATE_PROMPT = os.path.join(BASE_DIR, "prompts", "translate.txt")
+
+# Phase J: card language-flip. Only ja<->en are offered in the review UI.
+TRANSLATE_TARGETS = {"ja": "日本語 (Japanese)", "en": "英語 (English)"}
 
 # Phase I quiz sizing: start ~1 question per QUIZ_CHARS_PER_Q chars of material,
 # rounded UP to a multiple of QUIZ_STEP, clamped to [QUIZ_MIN, QUIZ_MAX]. If a big
@@ -272,6 +276,47 @@ def recast_card(card_id, method):
                         (card["course_id"], ch))
 
 
+def _card_translations(card):
+    """Parse a card's cached translation blob (tolerant of pre-migration rows)."""
+    if "translation_json" in card.keys() and card["translation_json"]:
+        try:
+            data = json.loads(card["translation_json"])
+            return data if isinstance(data, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
+
+
+def translate_card(card_id, target_lang):
+    """Phase J: translate a card's front/back into `target_lang` ('ja'|'en') so a
+    learner can flip its language while reviewing. The result is CACHED per-lang in
+    cards.translation_json — which is EXCLUDED from the D-5 content_hash — so the SRS
+    card is never duplicated or reset, and a re-flip is instant (no AI call). Returns
+    {"lang","front","back","cached"} or None if the card is gone. Raises on bad lang
+    / empty result / AI error."""
+    if target_lang not in TRANSLATE_TARGETS:
+        raise ValueError("翻訳先の言語が不正です")
+    card = db.query_one("SELECT * FROM cards WHERE id=?", (card_id,))
+    if not card:
+        return None
+    cache = _card_translations(card)
+    hit = cache.get(target_lang)
+    if isinstance(hit, dict) and (hit.get("front") or "").strip() and (hit.get("back") or "").strip():
+        return {"lang": target_lang, "front": hit["front"], "back": hit["back"], "cached": True}
+    with open(TRANSLATE_PROMPT, encoding="utf-8") as f:
+        prompt = f.read().format(target=TRANSLATE_TARGETS[target_lang],
+                                 front=card["front"], back=card["back"])
+    obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
+    front = (obj.get("front") or "").strip()
+    back = (obj.get("back") or "").strip()
+    if not front or not back:
+        raise ValueError("翻訳結果が空でした")
+    cache[target_lang] = {"front": front, "back": back}
+    db.write("UPDATE cards SET translation_json=? WHERE id=?",
+             (json.dumps(cache, ensure_ascii=False), card_id))
+    return {"lang": target_lang, "front": front, "back": back, "cached": False}
+
+
 # --------------------------------------------------------------------------
 # Phase I — material study modes: quiz (comprehension test) + summary (要点まとめ)
 # --------------------------------------------------------------------------
@@ -379,11 +424,12 @@ def generate_summary(material_id, scope=None, lang=None):
     return db.query_one("SELECT * FROM study_guides WHERE id=?", (gid,))
 
 
-def generate_draft(material_id, instruction=None, scope=None):
+def generate_draft(material_id, instruction=None, scope=None, lang=None):
     """Phase H3: on-demand 'make review cards from this material' with an optional
     free-text instruction and range. Reuses the subject prompt (so cards get H1
     modalities) plus a top-priority directive block for the steer/range, and inserts
     the cards as PROPOSED — nothing is studied until the user confirms (G1 gate).
+    lang None = the saved output-language setting (auto follows the material).
     Returns {added, topics}. Raises ValueError on empty text / no course / parse."""
     m, text = _material_text_or_raise(material_id)
     if not m:
@@ -398,7 +444,7 @@ def generate_draft(material_id, instruction=None, scope=None):
     instruction = (instruction or "").strip() or None
     scope = (scope or "").strip() or None
     with open(PROMPTS.get(stype, PROMPTS["memo"]), encoding="utf-8") as f:
-        prompt = f.read().format(text=text, lang_line=_lang_line())
+        prompt = f.read().format(text=text, lang_line=_lang_line(lang))
     extra = []
     if scope:
         extra.append(f"範囲を次に限定する（この部分だけからカードを作る）：{scope}")

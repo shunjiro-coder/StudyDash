@@ -829,6 +829,9 @@ textarea.rc-input { min-height: 84px; resize: vertical; line-height: 1.6; }
 .sm-chips { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 .sm-chip { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+  /* a bespoke <button> does NOT inherit color -> without this the label falls back
+     to the UA default (black), unreadable in dark mode. */
+  color: var(--text);
   cursor: pointer; text-align: left; transition: border-color var(--ease), background var(--ease); }
 .sm-chip:hover { border-color: var(--accent); }
 .sm-chip.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
@@ -920,3 +923,100 @@ textarea.rc-input { min-height: 84px; resize: vertical; line-height: 1.6; }
 /* Phase H3 — smart add-card body */
 .ac-body:empty { display: none; }
 .ac-body { margin-top: var(--sp-2); }
+
+/* ======================================================================
+   Phase J — material workspace, loading state, card translation,
+   review-by-material, notes search
+   ====================================================================== */
+
+/* ---- spinner + prominent "working…" states (#3) ---- */
+@keyframes sd-spin { to { transform: rotate(360deg); } }
+.btn-spin {
+  width: 14px; height: 14px; flex: none; display: inline-block; vertical-align: -2px;
+  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+  animation: sd-spin .7s linear infinite;
+}
+.btn.is-loading { display: inline-flex; align-items: center; gap: 6px; opacity: .85; cursor: progress; }
+.busy-banner {
+  display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); color: var(--text);
+}
+.busy-banner .btn-spin { color: var(--accent); width: 16px; height: 16px; }
+.busy-banner-t { font-size: .84rem; font-weight: 600; }
+.busy-sub { font-size: .74rem; font-weight: 400; color: var(--muted); margin-top: 1px; }
+
+/* ---- material workspace: file | transcript | options+cards (#1) ---- */
+.mat-modal { max-width: min(1280px, 97vw); width: 97vw; }
+.mat-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  padding-right: 40px; margin: 0 0 var(--sp-3); }
+.mat-head-title { margin: 0; font-size: 1.05rem; flex: 1; min-width: 0; }
+.mat-workspace { display: grid; gap: var(--sp-4); grid-template-columns: 1fr;
+  grid-template-areas: "file" "options" "transcript" "cards"; }
+.mw-file { grid-area: file; min-width: 0; }
+.mw-options { grid-area: options; min-width: 0; }
+.mw-options:empty { display: none; }
+.mw-transcript { grid-area: transcript; min-width: 0; }
+.mw-cards { grid-area: cards; min-width: 0; }
+.mw-h { font-size: .8rem; font-weight: 700; color: var(--muted); margin-bottom: var(--sp-1); }
+.mw-transcript .tr-pre { max-height: 46vh; }
+/* the study-modes box already has its own frame; flatten it inside the options pane */
+.mw-options > .study-modes { margin: 0; }
+
+/* medium: file on the left (sticky), right column stacks options/transcript/cards */
+@media (min-width: 900px) {
+  .mat-workspace {
+    grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+    grid-template-areas: "file options" "file transcript" "file cards";
+    align-items: start;
+  }
+  .mw-file { position: sticky; top: 0; align-self: start; max-height: 84vh; overflow: auto; }
+}
+
+/* wide: three real columns — file | transcript | (options above cards) */
+@media (min-width: 1200px) {
+  .mat-workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.15fr);
+    grid-template-areas: "file transcript options" "file transcript cards";
+  }
+  .mw-file, .mw-transcript { position: sticky; top: 0; align-self: start; max-height: 84vh; overflow: auto; }
+  .mw-transcript .tr-pre { max-height: none; }
+  .mw-cards { max-height: 84vh; overflow: auto; padding-right: 4px; }
+}
+
+/* center the wide workspace modal on desktop (others stay bottom-sheet) */
+@media (min-width: 900px) { .modal-overlay:has(> .mat-modal) { align-items: center; } }
+
+/* ---- card translation (#4): review flip + per-card toggle ---- */
+.rc-langs { display: inline-flex; align-items: center; gap: var(--sp-1); margin-left: auto; }
+.lang-flip, .lang-all { font-size: 12px; padding: 4px 8px; }
+.lang-all.on { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: var(--accent); color: var(--accent); }
+.rc-tr-busy { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; }
+.cp-trans-btn { margin-top: var(--sp-2); }
+.cp-trans { margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.cp-trans.hidden { display: none; }
+
+/* ---- review by material (#5) ---- */
+.rev-mat-hint { font-size: .8rem; color: var(--muted); margin-bottom: var(--sp-2); }
+.rev-mat-row { display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) 0; border-top: 1px solid var(--line); cursor: pointer; }
+.rev-mat-cb { flex: none; width: 16px; height: 16px; }
+.rev-mat-body { flex: 1; min-width: 0; }
+.rmm-title { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmm-meta { font-size: .74rem; color: var(--muted); margin-top: 1px; }
+.rev-mat-foot { margin-top: var(--sp-3); display: flex; justify-content: flex-end; }
+
+/* ---- notes search (#9) ---- */
+.search-input { width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface);
+  color: var(--text); margin-bottom: var(--sp-3); }
+.search-results { display: flex; flex-direction: column; gap: var(--sp-2); }
+.search-item { padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); cursor: pointer; transition: border-color var(--ease); }
+.search-item:hover { border-color: var(--accent); }
+.si-title { font-weight: 700; }
+.si-snip { font-size: .84rem; color: var(--muted); margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+.si-meta { font-size: .72rem; color: var(--muted); margin-top: 4px; }

@@ -60,7 +60,13 @@ const SD = {
 if (typeof switchTab === "function") {
   const _origSwitchTab = switchTab;
   // eslint-disable-next-line no-global-assign, no-func-assign
-  switchTab = function (name) { SD.setMode("app"); SD.setCurrentByTab(name); return _origSwitchTab(name); };
+  switchTab = function (name) {
+    // Leaving the outliner for a study tab must persist pending note edits first
+    // (flushDirty snapshots the dirty set synchronously) — else in-flight text is
+    // lost when notes-view is hidden. flushDirty lives in outline.js (loaded next).
+    if (SD.mode === "notes" && typeof flushDirty === "function") flushDirty();
+    SD.setMode("app"); SD.setCurrentByTab(name); return _origSwitchTab(name);
+  };
 }
 
 function sdInitShell() {

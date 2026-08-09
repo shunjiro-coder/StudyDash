@@ -45,18 +45,68 @@ async function withBusy(fn) {
 SD.onNav = function (nav) {
   if (nav === "daily") openDaily();
   else if (nav === "docs") renderDocList();
+  else if (nav === "search") renderSearch();
 };
+
+// -------------------------------------------------------------------------
+// Search (Phase J) — the sidebar 🔍 tab. Substring search over note titles +
+// rem text; debounced; click a result to open that note.
+// -------------------------------------------------------------------------
+async function renderSearch() {
+  await flushDirty();
+  closeSlash();
+  const host = $("#notes-view"); host.innerHTML = "";
+  SD.setCrumbs([{ label: "ノート", onClick: renderDocList }, { label: "検索" }]);
+  const head = el("div", "notes-head");
+  head.appendChild(el("div", "focus-title", "ノートを検索"));
+  host.appendChild(head);
+  const box = el("input", "search-input");
+  box.type = "search"; box.placeholder = "ノートの見出し・本文を検索…";
+  host.appendChild(box);
+  const results = el("div", "search-results");
+  host.appendChild(results);
+  let timer = null, seq = 0;
+  const run = async () => {
+    const q = box.value.trim();
+    // bump seq here too, so a late response for a prior query can't overwrite the
+    // cleared/empty state (its `mine` no longer matches seq).
+    if (!q) { seq++; results.innerHTML = ""; results.appendChild(el("div", "empty", "キーワードを入力してください")); return; }
+    const mine = ++seq;   // ignore stale responses that resolve out of order
+    let data;
+    try { data = await api("/api/search?q=" + encodeURIComponent(q)); }
+    catch (e) { if (mine === seq) { results.innerHTML = ""; results.appendChild(el("div", "empty", "検索に失敗しました")); } return; }
+    if (mine !== seq) return;
+    results.innerHTML = "";
+    if (!data.docs.length) { results.appendChild(el("div", "empty", "「" + q + "」に一致するノートはありません")); return; }
+    data.docs.forEach((d) => {
+      const it = el("div", "search-item");
+      it.appendChild(el("div", "si-title", docLabel(d)));
+      if (d.snippet) it.appendChild(el("div", "si-snip", d.snippet));
+      const meta = [];
+      if (d.match_count) meta.push(d.match_count + "件ヒット");
+      meta.push(relTime(d.updated_at));
+      it.appendChild(el("div", "si-meta", meta.join(" ・ ")));
+      it.onclick = () => openDoc(d.id);
+      results.appendChild(it);
+    });
+  };
+  box.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 250); };
+  box.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(timer); run(); } };
+  box.focus();
+}
 
 // -------------------------------------------------------------------------
 // Loading docs
 // -------------------------------------------------------------------------
 async function openDaily() {
+  await flushDirty();   // persist the doc we're leaving before it's replaced (else edits vanish)
   try { OUT.doc = await api("/api/docs/daily"); }
   catch (e) { toast("ノートを開けませんでした"); return; }
   renderDoc();
 }
 
 async function openDoc(id) {
+  await flushDirty();   // persist the doc we're leaving before it's replaced (else edits vanish)
   try { OUT.doc = await api("/api/docs/" + id); }
   catch (e) { toast("ノートを開けませんでした"); return; }
   SD.setMode("notes"); SD.setActiveNav(null);
@@ -675,7 +725,7 @@ async function setRemType(r, type, props, newText) {
   if (props !== undefined) body.props = props;
   if (newText !== undefined) body.text = newText;
   OUT.dirty.delete(r.id);
-  clearTimeout(OUT.saveTimer);
+  await flushDirty();   // persist OTHER dirty rems before the type change (don't strand them)
   try {
     const out = await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify(body) });
     r.rem_type = out.rem_type; r.props = out.props; r.text = out.text;
@@ -717,7 +767,7 @@ async function onEnter(r, text) {
   const before = full.slice(0, caret);
   const after = full.slice(caret);
   OUT.dirty.delete(r.id);
-  clearTimeout(OUT.saveTimer);
+  await flushDirty();   // persist OTHER dirty rems (don't just cancel their timer -> silent loss)
   if (before !== r.text) {
     try { await api("/api/rems/" + r.id, { method: "PATCH", body: JSON.stringify({ text: before }) }); r.text = before; }
     catch (e) { toast("保存に失敗"); return; }

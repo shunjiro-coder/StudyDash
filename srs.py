@@ -111,6 +111,9 @@ def _card_out(r, exam_courses):
         "card_type": r["card_type"],
         "media_json": (json.loads(r["media_json"])
                        if ("media_json" in keys and r["media_json"]) else None),
+        # J: cached ja/en translations so a language-flip in review is instant.
+        "translation": (json.loads(r["translation_json"])
+                        if ("translation_json" in keys and r["translation_json"]) else None),
         # E5: let the review screen jump back to WHERE this card came from.
         "material_id": r["material_id"],
         "source_loc": (json.loads(r["source_loc"])
@@ -255,4 +258,79 @@ def drill(course_id=None, topic=None, limit=20):
     rows = db.query(
         CARD_JOIN + " WHERE " + " AND ".join(where) +
         " ORDER BY RANDOM() LIMIT ?", params + [limit])
+    return [_card_out(r, exam_courses) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Phase J — study by (study) material: the review home groups study-ready cards by
+# the material they came from so a learner can pick ONE material to review, or
+# select several and merge them into one session. Deliberately study-ALL (like a
+# drill), not the spaced queue — picking a material means "study its cards now".
+# --------------------------------------------------------------------------
+def review_materials():
+    """Materials (and a 教材なし bucket for material-less cards) that have study-ready
+    cards, with new/due/total counts — the data behind the by-material picker."""
+    now_iso = db.now_utc_iso()
+    # NOTE: a material's display "summary" is derived from extracted_json (there is
+    # no summary column) — mirror ingest.material_dict and parse it in Python.
+    rows = db.query(
+        "SELECT c.material_id AS material_id, m.extracted_json AS extracted_json, "
+        "m.kind AS kind, m.original_path AS thumb_path, co.name AS course_name, "
+        "co.subject_type AS subject_type, COUNT(*) AS total, "
+        "SUM(CASE WHEN c.state='new' THEN 1 ELSE 0 END) AS new_n, "
+        "SUM(CASE WHEN c.state='review' AND c.next_due_at IS NOT NULL "
+        "         AND c.next_due_at <= ? THEN 1 ELSE 0 END) AS due_n "
+        "FROM cards c "
+        "LEFT JOIN materials m ON m.id = c.material_id "
+        "LEFT JOIN courses co ON co.id = c.course_id "
+        "WHERE c.state NOT IN ('suspended','proposed') "
+        "GROUP BY c.material_id "
+        "ORDER BY (due_n + new_n) DESC, c.material_id DESC", (now_iso,))
+    out = []
+    for r in rows:
+        mid = r["material_id"]
+        summary = None
+        if r["extracted_json"]:
+            try:
+                summary = (json.loads(r["extracted_json"]) or {}).get("summary")
+            except (TypeError, ValueError):
+                summary = None
+        label = (summary or "").strip() or (
+            f"教材 #{mid}" if mid else "教材なし（手動カードなど）")
+        out.append({
+            "material_id": mid,
+            "label": label,
+            "course_name": r["course_name"],
+            "subject_type": r["subject_type"],
+            "kind": r["kind"],
+            "thumb_url": ("/" + r["thumb_path"]) if r["thumb_path"] else None,
+            "total": r["total"], "new_count": r["new_n"] or 0, "due_count": r["due_n"] or 0,
+        })
+    return out
+
+
+def by_materials(tokens, limit=80):
+    """A review queue drawn from one or more materials (merge). `tokens` are
+    material-id strings; the literal 'none' selects material-less cards. Study-ALL
+    (every non-suspended/proposed card of those materials), due-first then new."""
+    want_null = any(str(t).strip().lower() in ("none", "null") for t in tokens)
+    # isascii() guards against Unicode "digits" (e.g. '²') that pass isdigit() but
+    # raise on int() — a public endpoint must not 500 on a crafted material_id.
+    ids = [int(s) for t in tokens
+           if (s := str(t).strip()).isascii() and s.isdigit() and int(s) > 0]
+    if not ids and not want_null:
+        return []
+    clauses, params = [], []
+    if ids:
+        clauses.append("c.material_id IN (%s)" % ",".join("?" * len(ids)))
+        params += ids
+    if want_null:
+        clauses.append("c.material_id IS NULL")
+    now_iso = db.now_utc_iso()
+    exam_courses = _exam_soon_courses(now_iso)
+    rows = db.query(
+        CARD_JOIN + " WHERE c.state NOT IN ('suspended','proposed') AND ("
+        + " OR ".join(clauses) + ") "
+        "ORDER BY (c.state='new'), (c.next_due_at IS NULL), c.next_due_at ASC, "
+        "c.id ASC LIMIT ?", params + [limit])
     return [_card_out(r, exam_courses) for r in rows]

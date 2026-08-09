@@ -469,6 +469,47 @@ def api_rem_batch():
     return jsonify({"ok": True, "saved": len(stmts), "updated_at": now})
 
 
+# --------------------------------------------------------------------------
+# Search (Phase J) — the sidebar 🔍 tab. A simple substring search over note
+# titles + rem text (no external index / FTS extension — dependency-free), each
+# matching doc returned once with a snippet and hit count.
+# --------------------------------------------------------------------------
+def _snippet(text, q, radius=42):
+    text = text or ""
+    i = text.lower().find(q.lower())
+    if i < 0:
+        return text[:90] + ("…" if len(text) > 90 else "")
+    start, end = max(0, i - radius), min(len(text), i + len(q) + radius)
+    s = text[start:end]
+    return ("…" if start > 0 else "") + s + ("…" if end < len(text) else "")
+
+
+@notes_bp.route("/api/search")
+def api_search():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"query": "", "docs": []})
+    # LIKE with the wildcard/escape chars in q neutralized (treat q literally).
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
+    docs = db.query(
+        "SELECT DISTINCT d.* FROM docs d LEFT JOIN rems r ON r.doc_id = d.id "
+        "WHERE d.archived=0 AND (d.title LIKE ? ESCAPE '\\' OR r.text LIKE ? ESCAPE '\\') "
+        "ORDER BY d.is_daily DESC, d.updated_at DESC LIMIT 50", (like, like))
+    out = []
+    for d in docs:
+        hit = db.query_one(
+            "SELECT text FROM rems WHERE doc_id=? AND text LIKE ? ESCAPE '\\' "
+            "ORDER BY position, id LIMIT 1", (d["id"], like))
+        n = db.query_one(
+            "SELECT COUNT(*) n FROM rems WHERE doc_id=? AND text LIKE ? ESCAPE '\\'",
+            (d["id"], like))["n"]
+        out.append(doc_dict(d, {
+            "snippet": _snippet(hit["text"], q) if hit else None,
+            "match_count": n}))
+    return jsonify({"query": q, "docs": out})
+
+
 @notes_bp.route("/api/rems/<int:rid>")
 def api_rem_zoom(rid):
     """Zoom into a rem: its subtree (ordered) + the ancestor breadcrumb above it."""

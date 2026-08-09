@@ -395,6 +395,9 @@ def card_dict(r):
         # H0: per-modality render structure (excluded from D-5 content_hash)
         "media_json": (json.loads(r["media_json"])
                        if ("media_json" in r.keys() and r["media_json"]) else None),
+        # J: cached ja/en translations for language-flip (also excluded from the hash)
+        "translation": (json.loads(r["translation_json"])
+                        if ("translation_json" in r.keys() and r["translation_json"]) else None),
         "state": r["state"], "next_due_at": r["next_due_at"],
     }
 
@@ -548,6 +551,26 @@ def api_card_recast(cid):
     return jsonify({"ok": True, "card": card_dict(new)})
 
 
+@app.route("/api/cards/<int:cid>/translate", methods=["POST"])
+def api_card_translate(cid):
+    """Phase J: translate a card's front/back into 'ja' or 'en' for language-flip
+    review. Cached per-lang in cards.translation_json (excluded from the D-5 hash),
+    so a re-flip is instant and the SRS card is never duplicated. One AI call, sync."""
+    if not db.query_one("SELECT id FROM cards WHERE id=?", (cid,)):
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    lang = (data.get("lang") or "").strip()
+    try:
+        res = generate.translate_card(cid, lang)
+    except generate.ai.ClaudeError as e:
+        return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "message": f"翻訳に失敗: {str(e)[:200]}"}), 200
+    if not res:
+        abort(404)
+    return jsonify({"ok": True, "translation": res})
+
+
 # --------------------------------------------------------------------------
 # Phase I — material study modes: quiz + summary (in addition to flashcards).
 # Both are synchronous single AI calls (like recast); AI/parse failures return
@@ -568,8 +591,9 @@ def api_material_quiz(mid):
     except (TypeError, ValueError):
         count = None
     scope = (data.get("scope") or "").strip() or None
+    lang = (data.get("lang") or "").strip() or None   # None -> saved setting (auto)
     try:
-        qz = generate.generate_quiz(mid, fmt, count, scope)
+        qz = generate.generate_quiz(mid, fmt, count, scope, lang)
     except generate.ai.ClaudeError as e:
         return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
     except ValueError as e:
@@ -585,8 +609,9 @@ def api_material_summary(mid):
         abort(404)
     data = request.get_json(silent=True) or {}
     scope = (data.get("scope") or "").strip() or None
+    lang = (data.get("lang") or "").strip() or None   # None -> saved setting (auto)
     try:
-        g = generate.generate_summary(mid, scope)
+        g = generate.generate_summary(mid, scope, lang)
     except generate.ai.ClaudeError as e:
         return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
     except ValueError as e:
@@ -607,8 +632,9 @@ def api_material_draft(mid):
     data = request.get_json(silent=True) or {}
     instruction = (data.get("instruction") or "").strip() or None
     scope = (data.get("scope") or "").strip() or None
+    lang = (data.get("lang") or "").strip() or None   # None -> saved setting (auto)
     try:
-        res = generate.generate_draft(mid, instruction, scope)
+        res = generate.generate_draft(mid, instruction, scope, lang)
     except generate.ai.ClaudeError as e:
         return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
     except ValueError as e:
@@ -711,6 +737,20 @@ def api_review_weak():
 def api_review_drill():
     return jsonify(srs.drill(request.args.get("course_id"),
                              request.args.get("topic")))
+
+
+@app.route("/api/review/materials")
+def api_review_materials():
+    """Phase J: study-ready cards grouped by their source material (+ counts), for
+    the review-home 'study by material' picker."""
+    return jsonify(srs.review_materials())
+
+
+@app.route("/api/review/by-material")
+def api_review_by_material():
+    """Phase J: a review queue from one or more materials (merge). Repeat
+    material_id= for several; material_id=none selects material-less cards."""
+    return jsonify(srs.by_materials(request.args.getlist("material_id")))
 
 
 @app.route("/api/review/cram")
