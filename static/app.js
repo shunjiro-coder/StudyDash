@@ -23,6 +23,28 @@ const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) 
 // SVG needs createElementNS (SVGElement.className is read-only, so el() can't build it)
 const SVGNS = "http://www.w3.org/2000/svg";
 const elNS = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+// The AI writes cards with light markdown (**bold**, *italic*). Review used to
+// print those markers literally, so a card mid-study read "**Sugar:**". Inline
+// only — block markdown belongs to mdToNode — and textContent throughout, never
+// innerHTML. Bold is split first so **a** can't be mistaken for two *italics*.
+// A marker must hug its text (no space just inside), or "2 * 3 * 4" on a maths
+// card would italicise the arithmetic.
+const MD_BOLD = /\*\*[^\s*](?:[^*]*[^\s*])?\*\*/;
+const MD_ITAL = /\*[^\s*](?:[^*\n]*[^\s*])?\*/;
+const mdInline = (text) => {
+  const frag = document.createDocumentFragment();
+  String(text == null ? "" : text).split(new RegExp("(" + MD_BOLD.source + ")")).forEach((seg) => {
+    if (new RegExp("^" + MD_BOLD.source + "$").test(seg)) {
+      frag.appendChild(el("strong", "", seg.slice(2, -2))); return;
+    }
+    seg.split(new RegExp("(" + MD_ITAL.source + ")")).forEach((p) => {
+      if (new RegExp("^" + MD_ITAL.source + "$").test(p)) frag.appendChild(el("em", "", p.slice(1, -1)));
+      else if (p) frag.appendChild(document.createTextNode(p));
+    });
+  });
+  return frag;
+};
+const elMd = (tag, cls, text) => { const e = el(tag, cls); e.appendChild(mdInline(text)); return e; };
 // mastery ring: track (--line) + progress arc (--ok). Colors set via .style so var() resolves in Safari.
 function masteryRing(pct) {
   const SZ = 88, SW = 8, R = (SZ - SW) / 2, C = 2 * Math.PI * R, MID = SZ / 2;
@@ -553,7 +575,9 @@ function renderCard(p) {
   wrap.appendChild(top);
 
   const face = el("div", "review-card");
-  face.appendChild(el("div", "review-front", isCloze ? clozeText(dispFront, dispBack, r.revealed) : dispFront));
+  face.appendChild(isCloze
+    ? el("div", "review-front", clozeText(dispFront, dispBack, r.revealed))
+    : elMd("div", "review-front", dispFront));
 
   if (!r.revealed) {
     if (PRODUCE_TYPES.has(ct)) {
@@ -580,18 +604,18 @@ function renderCard(p) {
     }
     if (STEP_TYPES.has(ct)) {
       const steps = (Array.isArray(mj.steps) && mj.steps.length) ? mj.steps : _lines(card.back);
-      const ol = el("ol", "rc-steps"); steps.forEach((s) => ol.appendChild(el("li", "", s))); face.appendChild(ol);
+      const ol = el("ol", "rc-steps"); steps.forEach((s) => ol.appendChild(elMd("li", "", s))); face.appendChild(ol);
     } else if (ct === "list") {
       const items = (Array.isArray(mj.items) && mj.items.length) ? mj.items : _lines(card.back);
-      const box = el("div", "rc-list"); items.forEach((s) => { const lab = el("label", "rc-check"); const cb = el("input"); cb.type = "checkbox"; lab.appendChild(cb); lab.appendChild(el("span", "", s)); box.appendChild(lab); }); face.appendChild(box);
+      const box = el("div", "rc-list"); items.forEach((s) => { const lab = el("label", "rc-check"); const cb = el("input"); cb.type = "checkbox"; lab.appendChild(cb); lab.appendChild(elMd("span", "", s)); box.appendChild(lab); }); face.appendChild(box);
     } else if (!isCloze) {
-      face.appendChild(el("div", "review-back", dispBack));
+      face.appendChild(elMd("div", "review-back", dispBack));
     }
     // compute shows the answer (back) above; add the worked steps if provided.
     if (ct === "compute" && Array.isArray(mj.steps) && mj.steps.length) {
-      const ol = el("ol", "rc-steps"); mj.steps.forEach((s) => ol.appendChild(el("li", "", s))); face.appendChild(ol);
+      const ol = el("ol", "rc-steps"); mj.steps.forEach((s) => ol.appendChild(elMd("li", "", s))); face.appendChild(ol);
     }
-    if (mj.rubric) { const rb = el("div", "rc-rubric"); rb.appendChild(el("div", "rc-rubric-t", "自己採点の観点")); rb.appendChild(el("div", "", mj.rubric)); face.appendChild(rb); }
+    if (mj.rubric) { const rb = el("div", "rc-rubric"); rb.appendChild(el("div", "rc-rubric-t", "自己採点の観点")); rb.appendChild(elMd("div", "", mj.rubric)); face.appendChild(rb); }
     if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; img.alt = ""; img.onerror = () => img.remove(); face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
     if (card.material_id && (card.source_loc || card.source_quote)) {
@@ -1653,8 +1677,8 @@ function brokenImageCard(url) {
 }
 function cardPreview(c, low) {
   const d = el("div", "card-preview" + (c.origin === "generated" ? " generated" : "") + (low ? " low" : ""));
-  d.appendChild(el("div", "cp-front", c.front));
-  d.appendChild(el("div", "cp-back", c.back));
+  d.appendChild(elMd("div", "cp-front", c.front));
+  d.appendChild(elMd("div", "cp-back", c.back));
   const tags = el("div", "cp-tags");
   tags.appendChild(el("span", "pill", c.origin === "generated" ? "AI生成" : "原本"));
   if (c.topic) tags.appendChild(el("span", "pill", c.topic));
@@ -1663,7 +1687,7 @@ function cardPreview(c, low) {
   // J — per-card translate toggle: shows the card in the other language beneath.
   const trBox = el("div", "cp-trans hidden");
   const trBtn = el("button", "btn small ghost cp-trans-btn", "🌐 翻訳");
-  const showTrans = (t) => { trBox.innerHTML = ""; trBox.appendChild(el("div", "cp-front", t.front)); trBox.appendChild(el("div", "cp-back", t.back)); trBox.classList.remove("hidden"); };
+  const showTrans = (t) => { trBox.innerHTML = ""; trBox.appendChild(elMd("div", "cp-front", t.front)); trBox.appendChild(elMd("div", "cp-back", t.back)); trBox.classList.remove("hidden"); };
   trBtn.onclick = async (e) => {
     e.stopPropagation();
     if (!trBox.classList.contains("hidden")) { trBox.classList.add("hidden"); return; }   // toggle off
