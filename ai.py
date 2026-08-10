@@ -56,14 +56,45 @@ def model_for(kind):
     return s.get("model_image") if kind == "image" else s.get("model_text")
 
 
+DEFAULT_TIMEOUT = 180
+MAX_TIMEOUT = 900
+
+
+def timeout_for(path=None):
+    """How long to allow a claude call, scaled by how much document it has to read.
+
+    A flat 180s silently killed a 646KB, 327-entry vocabulary PDF: transcribing a
+    long word list simply takes longer than answering questions about a slide. The
+    budget grows with file size and is capped so a runaway call still dies.
+    Overridable via the `ai_timeout_sec` setting.
+    """
+    s = db.load_settings()
+    override = s.get("ai_timeout_sec")
+    if override:
+        try:
+            return max(30, min(MAX_TIMEOUT, int(override)))
+        except (TypeError, ValueError):
+            pass
+    base = DEFAULT_TIMEOUT
+    try:
+        if path and os.path.exists(path):
+            mb = os.path.getsize(path) / (1024.0 * 1024.0)
+            base += int(mb * 240)      # ~4 extra minutes per MB of source
+    except OSError:
+        pass
+    return max(DEFAULT_TIMEOUT, min(MAX_TIMEOUT, base))
+
+
 def run_claude(prompt, model=None, add_dirs=None, allowed_tools="Read",
-               timeout=180, cwd=None):
+               timeout=None, cwd=None):
     """Run `claude -p` and return the parsed JSON dict.
 
     Raises ClaudeError on: binary missing, timeout (child + group killed),
     non-JSON output, or is_error:true (incl. rate limit).
     Returns dict with keys like 'result', 'total_cost_usd', 'is_error'.
     """
+    if timeout is None:
+        timeout = timeout_for()
     ok, claude = check_claude()
     if not ok:
         raise ClaudeError(f"claude CLI not found or not executable: {claude}")

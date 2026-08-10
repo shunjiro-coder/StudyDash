@@ -702,14 +702,26 @@ def api_material_regenerate(mid):
 
 @app.route("/api/materials/<int:mid>", methods=["DELETE"])
 def api_material_delete(mid):
+    """Delete a material. Its cards are KEPT by default and simply detached
+    (cards.material_id is ON DELETE SET NULL), so review history is never lost by
+    tidying up the materials list. ?cards=1 deletes that material's cards too —
+    the caller has to ask for it explicitly, and is told the count first."""
     m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
-    if m and m["original_path"]:
+    if not m:
+        return jsonify({"ok": True, "deleted_cards": 0})
+    drop_cards = str(request.args.get("cards", "")).strip() in ("1", "true", "yes")
+    deleted_cards = 0
+    if drop_cards:
+        deleted_cards = db.query_one(
+            "SELECT COUNT(*) n FROM cards WHERE material_id=?", (mid,))["n"]
+        db.write("DELETE FROM cards WHERE material_id=?", (mid,))
+    if m["original_path"]:
         try:
             os.remove(os.path.join(BASE_DIR, m["original_path"]))
         except OSError:
             pass
     db.write("DELETE FROM materials WHERE id=?", (mid,))
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "deleted_cards": deleted_cards})
 
 
 @app.route("/api/cards")

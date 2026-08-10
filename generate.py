@@ -288,9 +288,18 @@ def generate_for_material(material_id):
 
     course_id = m["course_id"]
     text = m["extracted_text"]
-    if not course_id or not text:
+    if not text:
+        # NOT 'done'. A material with no transcription produced nothing, and
+        # marking it done overwrote the 'failed' that extraction had correctly
+        # set — leaving a timed-out PDF looking finished, with zero cards and no
+        # way to retry it. Keep it failed so the UI offers 再試行.
+        db.write("UPDATE materials SET status='failed', error_message=? WHERE id=?",
+                 (m["error_message"] or
+                  "文字起こしができませんでした。もう一度お試しください。", material_id))
+        return 0, "no text"
+    if not course_id:
         db.write("UPDATE materials SET status='done' WHERE id=?", (material_id,))
-        return 0, "no course/text"
+        return 0, "no course"
 
     course = db.query_one("SELECT * FROM courses WHERE id=?", (course_id,))
     stype = course["subject_type"] if course else "memo"

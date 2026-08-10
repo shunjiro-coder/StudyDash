@@ -409,7 +409,8 @@ async function loadReviewQueue(mode, opts = {}) {
     else { const q = await api("/api/review/queue" + (stratQS ? "?" + stratQS : "")); cards = q.cards; }
   } catch (e) { toast("読み込み失敗"); return; }
   S.review = { queue: cards, idx: 0, revealed: false, mode, label: opts.label || "",
-               strategies: strat };
+               strategies: strat, translateAll: wantsTranslateAll(),
+               trans: {}, transOff: new Set() };
   if (!cards.length) toast("対象カードがありません");
   switchTab("review");
 }
@@ -720,6 +721,7 @@ function renderCard(p) {
       r.trans[card.id] = { lang: target, front: cached.front, back: cached.back };
     else ensureTranslation(card, target);   // async -> re-renders when done
   }
+  if (r.translateAll) prefetchTranslations();
   const tr = r.trans[card.id] || null;
   const dispFront = tr ? tr.front : card.front;
   const dispBack = tr ? tr.back : card.back;
@@ -735,14 +737,21 @@ function renderCard(p) {
   // language flip: per-card 🌐 (toggles this card) + a session 全部翻訳 toggle.
   const langWrap = el("div", "rc-langs");
   const flip = el("button", "btn small ghost lang-flip",
-    tr ? "🌐 原文に戻す" : (detectLang(card.front) === "ja" ? "🌐 English" : "🌐 日本語"));
+    tr ? "🌐 原文に戻す" : (target === "en" ? "🌐 English" : "🌐 日本語"));
+  flip.title = tr ? "このカードを元の言語に戻します"
+                  : "このカードだけ" + (target === "en" ? "英語" : "日本語") + "で表示します";
   flip.onclick = (e) => { e.stopPropagation(); flipCardLang(card); };
   langWrap.appendChild(flip);
-  const allBtn = el("button", "btn small ghost lang-all" + (r.translateAll ? " on" : ""), r.translateAll ? "✓ 全部翻訳中" : "🌐 全部翻訳");
+  const allBtn = el("button", "btn small ghost lang-all" + (r.translateAll ? " on" : ""),
+    r.translateAll ? "✓ 全部翻訳中" : "🌐 全部翻訳");
+  allBtn.title = r.translateAll
+    ? "全部翻訳をやめて、すべて元の言語に戻します"
+    : "このセッションのカードをすべて翻訳して表示します（次のカードも自動で切り替わります）";
   allBtn.onclick = (e) => {
     e.stopPropagation();
     if (r.translateAll) { r.translateAll = false; r.trans = {}; r.transOff = new Set(); }   // off -> clear all
     else { r.translateAll = true; r.transOff = new Set(); }
+    setTranslateAll(r.translateAll);   // remember it for the next session too
     renderReview();
   };
   langWrap.appendChild(allBtn);
@@ -880,6 +889,37 @@ async function grade(g) {
 // J — flip ONE card between its original and the opposite language (ja<->en).
 // Cached translations (card.translation[lang], also refreshed onto the object here)
 // make a re-flip instant; the first flip calls the AI once.
+// 全部翻訳 means "show this whole deck in the other language". Each card still
+// needs one AI call the first time (5-60s), so without this the next card always
+// appears in its original language while you wait — which reads as the toggle not
+// working. Warm the next few cards in the background so advancing is instant.
+const TRANSLATE_AHEAD = 3;
+// 全部翻訳 persists across sessions: someone studying an English deck in Japanese
+// wants that every time, not once per session.
+function wantsTranslateAll() {
+  try { return localStorage.getItem("review_translate_all") === "1"; } catch (e) { return false; }
+}
+function setTranslateAll(on) {
+  try { localStorage.setItem("review_translate_all", on ? "1" : "0"); } catch (e) {}
+}
+
+function prefetchTranslations() {
+  const r = S.review;
+  if (!r || !r.translateAll || !r.queue) return;
+  let started = 0;
+  for (let i = r.idx + 1; i < r.queue.length && started < TRANSLATE_AHEAD; i++) {
+    const c = r.queue[i];
+    if (!c || c._translating) continue;
+    const t = detectLang(c.front) === "ja" ? "en" : "ja";
+    if (c._transErr === t) continue;
+    if (r.transOff && r.transOff.has(c.id)) continue;
+    if (c.translation && c.translation[t] && c.translation[t].front) continue;  // cached
+    started++;
+    // silent: a background warm-up must never raise a toast at the learner
+    ensureTranslation(c, t, { silent: true, prefetch: true });
+  }
+}
+
 async function flipCardLang(card) {
   const r = S.review; r.trans = r.trans || {}; r.transOff = r.transOff || new Set();
   if (r.trans[card.id]) {
@@ -916,7 +956,13 @@ async function ensureTranslation(card, target, opts) {
     const wanted = opts.manual || (r.translateAll && !(r.transOff && r.transOff.has(card.id)));
     if (wanted) r.trans[card.id] = { lang: target, front: res.translation.front, back: res.translation.back };
   } catch (e) { card._transErr = target; if (!opts.silent) toast("翻訳に失敗: " + e.message); }
-  finally { card._translating = false; if (S.tab === "review") renderReview(); }
+  finally {
+    card._translating = false;
+    // a background warm-up of a later card must not re-render the one on screen
+    const r2 = S.review;
+    const onScreen = r2 && r2.queue && r2.queue[r2.idx] && r2.queue[r2.idx].id === card.id;
+    if (S.tab === "review" && (onScreen || !opts.prefetch)) renderReview();
+  }
 }
 
 // ---------- MATERIALS (Phase 3) ----------
@@ -1072,8 +1118,76 @@ async function renderMaterials() {
       toast("再生成をキューに入れました", true); selMat.clear(); await refreshMeta(); renderMaterials();
     };
     tb.appendChild(gen);
+    const del = el("button", "btn small danger", "🗑 削除");
+    del.onclick = () => confirmDeleteMaterials(mats, p);
+    tb.appendChild(del);
+    const clear = el("button", "btn small ghost", "選択を解除");
+    clear.onclick = () => { selMat.clear(); renderMaterials(); };
+    tb.appendChild(clear);
     p.appendChild(tb);
   }
+}
+
+// Deleting a material does NOT have to take its cards with it — cards are
+// detached (material_id -> NULL) and keep their review history. That is the safe
+// default, but it is only safe if the user is told, so the count is shown and
+// taking the cards too is an explicit opt-in rather than a surprise.
+function confirmDeleteMaterials(mats, p) {
+  const chosen = mats.filter((m) => selMat.has(m.id));
+  const cardCount = chosen.reduce((n, m) => n + (m.card_count || 0), 0);
+  const old = p.querySelector(".mat-del-confirm");
+  if (old) old.remove();
+
+  const box = el("div", "card mat-del-confirm");
+  box.appendChild(el("div", "focus-title", `${chosen.length}件の教材を削除しますか？`));
+  const names = chosen.slice(0, 5).map((m) => m.summary || m.original_path || `教材 ${m.id}`);
+  box.appendChild(el("div", "meta-line",
+    names.map((s) => "・" + String(s).slice(0, 40)).join("\n")
+    + (chosen.length > 5 ? `\n…ほか${chosen.length - 5}件` : "")));
+
+  let dropCards = false;
+  if (cardCount) {
+    const lab = el("label", "mat-del-opt");
+    const cb = el("input"); cb.type = "checkbox";
+    cb.onchange = () => { dropCards = cb.checked; hint.textContent = msg(); };
+    lab.appendChild(cb);
+    lab.appendChild(el("span", "", `ひもづくカード ${cardCount}枚 も一緒に削除する`));
+    box.appendChild(lab);
+  }
+  const msg = () => (!cardCount
+    ? "この教材にカードはありません。"
+    : dropCards
+      ? `カード ${cardCount}枚 も削除されます。復習の履歴も消えます。`
+      : `カード ${cardCount}枚 は残ります（「教材なし」に移動し、復習はそのまま続けられます）。`);
+  const hint = el("div", "meta-line", msg());
+  box.appendChild(hint);
+
+  const row = el("div", "proposal-actions");
+  const go = el("button", "btn small danger", "削除する");
+  go.onclick = async () => {
+    const restore = btnBusy(go, "削除中…");
+    let gone = 0, cards = 0;
+    try {
+      for (const id of Array.from(selMat)) {
+        const res = await api(`/api/materials/${id}` + (dropCards ? "?cards=1" : ""),
+                              { method: "DELETE" });
+        gone++; cards += (res && res.deleted_cards) || 0;
+      }
+      toast(`${gone}件の教材を削除しました` + (cards ? `（カード${cards}枚も削除）` : ""), true);
+      selMat.clear();
+      await refreshMeta();
+      renderMaterials();
+    } catch (e) {
+      toast("削除に失敗: " + e.message);
+      restore();
+    }
+  };
+  const no = el("button", "btn small ghost", "やめる");
+  no.onclick = () => box.remove();
+  row.appendChild(go); row.appendChild(no);
+  box.appendChild(row);
+  p.appendChild(box);
+  box.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 function selectRange(mats, k) {
   selMat.clear();
@@ -1259,28 +1373,41 @@ async function openMaterial(mid, highlight) {
     recRow.appendChild(rec);
     panel.appendChild(recRow);
     const pick = el("details", "proposal-pick");
-    pick.appendChild(el("summary", "", "項目を選ぶ"));
+    pick.appendChild(el("summary", "", `項目を選ぶ（${proposed.length}）`));
+    const rowHost = el("div", "pp-rows");
     const boxes = [];
-    proposed.forEach((c) => {
-      const row = el("label", "pp-row");
-      const cb = el("input", "pp-cb"); cb.type = "checkbox"; cb.checked = true; cb.value = String(c.id);
-      boxes.push(cb); row.appendChild(cb);
-      const bd = el("div", "pp-body");
-      bd.appendChild(el("div", "pp-front", c.front));
-      bd.appendChild(el("div", "pp-back", c.back));
-      if (c.source_loc || c.source_quote) {
-        const loc = el("button", "pp-loc", "📍 出典"); loc.type = "button";
-        loc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); highlightQuote(c.source_loc || c.source_quote); };
-        bd.appendChild(loc);
-      }
-      row.appendChild(bd);
-      bd.appendChild(recastRow(c, () => { ov.remove(); openMaterial(m.id); }));
-      pick.appendChild(row);
-    });
+    // A 327-word vocabulary PDF proposes hundreds of items, and every row carries
+    // a method <select>. Building all of that up front stalled the material view
+    // for a list that is collapsed by default, so rows are built on first open.
+    let built = false;
+    const buildRows = () => {
+      if (built) return;
+      built = true;
+      proposed.forEach((c) => {
+        const row = el("label", "pp-row");
+        const cb = el("input", "pp-cb"); cb.type = "checkbox"; cb.checked = true; cb.value = String(c.id);
+        boxes.push(cb); row.appendChild(cb);
+        const bd = el("div", "pp-body");
+        bd.appendChild(el("div", "pp-front", c.front));
+        bd.appendChild(el("div", "pp-back", c.back));
+        if (c.source_loc || c.source_quote) {
+          const loc = el("button", "pp-loc", "📍 出典"); loc.type = "button";
+          loc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); highlightQuote(c.source_loc || c.source_quote); };
+          bd.appendChild(loc);
+        }
+        row.appendChild(bd);
+        bd.appendChild(recastRow(c, () => { ov.remove(); openMaterial(m.id); }));
+        rowHost.appendChild(row);
+      });
+    };
+    pick.addEventListener("toggle", () => { if (pick.open) buildRows(); });
+    pick.appendChild(rowHost);
     const pickRow = el("div", "proposal-actions");
     const pb = el("button", "btn small primary", "選んだ項目で学ぶ");
     pb.onclick = () => {
-      const ids = boxes.filter((x) => x.checked).map((x) => Number(x.value));
+      // untouched picker => every item is still checked, so approve them all
+      const ids = built ? boxes.filter((x) => x.checked).map((x) => Number(x.value))
+                        : proposed.map((c) => Number(c.id));
       if (!ids.length) { toast("1項目以上選んでください"); return; }
       approve(ids);
     };

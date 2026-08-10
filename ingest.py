@@ -221,12 +221,17 @@ def _insert_proposed(course_id, material_id, items):
     return n
 
 
-def _extract_with_retry(prompt, model, add_dirs):
-    """Run claude, parse JSON, one retry on parse failure. Returns (obj, raw)."""
+def _extract_with_retry(prompt, model, add_dirs, source_path=None):
+    """Run claude, parse JSON, one retry on parse failure. Returns (obj, raw).
+
+    The timeout scales with the source file — transcribing a long PDF takes far
+    longer than reading one slide, and a flat budget just kills it.
+    """
     last_raw = ""
+    timeout = ai.timeout_for(source_path)
     for attempt in range(2):
         data = ai.run_claude(prompt, model=model, add_dirs=add_dirs,
-                             allowed_tools="Read", cwd=BASE_DIR)
+                             allowed_tools="Read", cwd=BASE_DIR, timeout=timeout)
         last_raw = ai.result_text(data)
         try:
             return ai.extract_json(last_raw), last_raw
@@ -263,7 +268,8 @@ def ingest_handler(payload):
     model = db.load_settings().get("model_image")
     db.bump_material_attempts(mid)  # count BEFORE the call (crash-safe)
     try:
-        obj, _ = _extract_with_retry(prompt, model, add_dirs=[UPLOADS_DIR])
+        obj, _ = _extract_with_retry(prompt, model, add_dirs=[UPLOADS_DIR],
+                                     source_path=os.path.join(BASE_DIR, path))
     except ai.ClaudeError as e:
         db.write("UPDATE materials SET status='failed', error_message=? WHERE id=?",
                  (f"AI呼び出し失敗: {str(e)[:RAW_PREVIEW]}", mid))
