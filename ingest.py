@@ -178,12 +178,12 @@ def _insert_extracted_cards(course_id, material_id, cards, extracted_text=""):
     now = db.now_utc_iso()
     n = 0
     for c in cards:
-        front = (c.get("front") or "").strip()
-        back = (c.get("back") or "").strip()
+        front = db.text_cell(c.get("front"))
+        back = db.text_cell(c.get("back"))
         if not front or not back:
             continue
         # E5: locate the verbatim quote in the transcription (offsets or null).
-        sq = (c.get("source_quote") or "").strip() or None
+        sq = db.text_cell(c.get("source_quote")) or None
         loc_json = (json.dumps(db.locate(sq, extracted_text), ensure_ascii=False)
                     if sq else None)
         db.write(
@@ -293,9 +293,18 @@ def ingest_handler(payload):
         "status='generating' WHERE id=?",
         (obj.get("text"), json.dumps(obj, ensure_ascii=False), course_id, mid))
 
-    _insert_extracted_cards(course_id, mid, obj.get("extracted_cards") or [],
-                            obj.get("text") or "")
-    _insert_proposed(course_id, mid, obj.get("proposed_assignments") or [])
+    # Persisting is wrapped: a malformed payload here must never leave the
+    # material stuck in 'generating', because worker._run swallows the traceback
+    # and reconcile() re-enqueues every 'generating' row on the next boot — so it
+    # would re-crash forever with no way for the user to see or retry it.
+    try:
+        _insert_extracted_cards(course_id, mid, obj.get("extracted_cards") or [],
+                                obj.get("text") or "")
+        _insert_proposed(course_id, mid, obj.get("proposed_assignments") or [])
+    except Exception as e:
+        db.write("UPDATE materials SET status='failed', error_message=? WHERE id=?",
+                 (f"カード保存に失敗しました: {str(e)[:RAW_PREVIEW]}", mid))
+        return
 
     worker.enqueue("generate", {"material_id": mid})
 

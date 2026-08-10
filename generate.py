@@ -125,21 +125,9 @@ def _clean_card_type(ct):
     return ct if ct in VALID_CARD_TYPES else "qa"
 
 
-def _cell(v):
-    """One rendered item of a step / checklist / choice list.
-
-    Numbers are legitimate content (a maths card's options really are 4, 5, 6), so
-    they are kept as text. Everything else — null, booleans, nested objects — is
-    dropped rather than stringified: a bare str() would put the literal "None" in
-    front of the student as a selectable answer.
-    """
-    if isinstance(v, str):
-        return v.strip()
-    if isinstance(v, bool):
-        return ""
-    if isinstance(v, (int, float)):
-        return str(v)
-    return ""
+# One shared definition (db.text_cell) so the card, quiz and ingest paths cannot
+# drift apart on what counts as usable text.
+_cell = db.text_cell
 
 
 def _frac(v):
@@ -688,13 +676,16 @@ def _clean_quiz_questions(raw, fmt):
     for q in (raw or []):
         if not isinstance(q, dict):
             continue
-        question = (q.get("question") or "").strip()
-        answer = (q.get("answer") or "").strip()
+        question = _cell(q.get("question"))
+        answer = _cell(q.get("answer"))
         if not question or not answer:
             continue
         qtype, choices = q.get("type"), None
         if fmt == "mixed" and qtype == "choice":
-            opts = [str(c).strip() for c in (q.get("choices") or []) if str(c).strip()]
+            # _cell, not str(): a JSON null here would otherwise become the literal
+            # string "None" and be offered to the student as a selectable option —
+            # the same defect already fixed for card choices and step lists.
+            opts = [_cell(c) for c in (q.get("choices") or []) if _cell(c)]
             if len(opts) >= 2 and answer in opts:
                 qtype, choices = "choice", opts
             else:

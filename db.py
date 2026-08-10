@@ -163,6 +163,26 @@ def normalize_due(s):
 _WS = re.compile(r"\s+")
 
 
+def text_cell(v):
+    """One piece of model- or user-supplied text, coerced safely.
+
+    JSON gives back whatever the model felt like emitting. Numbers are real
+    content — a maths card's options genuinely are 4, 5, 6, and a vocabulary list
+    can contain a numeric entry — so they become text. Everything else (null,
+    booleans, nested objects) is dropped rather than stringified: `str(None)` is
+    the string "None", which has twice reached a learner as a selectable answer,
+    and a bare `.strip()` on a non-string raises AttributeError deep inside a
+    worker where it strands the material it was processing.
+    """
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, (int, float)):
+        return str(v)
+    return ""
+
+
 def norm_text(s):
     s = unicodedata.normalize("NFKC", s or "").strip()
     return _WS.sub(" ", s)
