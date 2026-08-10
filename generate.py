@@ -112,7 +112,12 @@ def _generate_with_retry(prompt, model):
 # modalities never disturb dedup/regenerate.
 _PRODUCE_TYPES = {"produce", "explain", "interpret", "predict", "compare", "elaborate"}
 _STEP_TYPES = {"steps", "worked", "compute"}   # render an ordered step list
-VALID_CARD_TYPES = {"qa", "term", "cloze", "list"} | _PRODUCE_TYPES | _STEP_TYPES
+# H5: 'choice' keeps the real answer in `back` (so D-5 identity is unchanged) and
+# stores only the WRONG options in media_json, which is excluded from the hash.
+VALID_CARD_TYPES = ({"qa", "term", "cloze", "list", "choice", "occlusion"}
+                    | _PRODUCE_TYPES | _STEP_TYPES)
+CHOICE_MAX = 5
+OCCLUSION_MAX_RECTS = 24
 
 
 def _clean_card_type(ct):
@@ -120,23 +125,104 @@ def _clean_card_type(ct):
     return ct if ct in VALID_CARD_TYPES else "qa"
 
 
-def _clean_media_json(card_type, mj):
+def _cell(v):
+    """One rendered item of a step / checklist / choice list.
+
+    Numbers are legitimate content (a maths card's options really are 4, 5, 6), so
+    they are kept as text. Everything else — null, booleans, nested objects — is
+    dropped rather than stringified: a bare str() would put the literal "None" in
+    front of the student as a selectable answer.
+    """
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, (int, float)):
+        return str(v)
+    return ""
+
+
+def _frac(v):
+    """A rectangle coordinate: a fraction of the image, clamped to [0,1]. Fractions
+    (not pixels) so a card drawn on a phone renders correctly on a laptop."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):   # NaN / inf
+        return None
+    return min(1.0, max(0.0, round(f, 5)))
+
+
+def _clean_occlusion(occ):
+    """H6: validate an image-occlusion payload — the masked rectangles, which one
+    this card asks about, and the image it belongs to. Lives in media_json, which
+    is EXCLUDED from the content_hash, so the D-5 formula is untouched."""
+    if not isinstance(occ, dict):
+        return None
+    image = _gloss_str(occ.get("image"))
+    rects = []
+    for r in (occ.get("rects") if isinstance(occ.get("rects"), list) else []):
+        if not isinstance(r, dict):
+            continue
+        x, y, w, h = (_frac(r.get("x")), _frac(r.get("y")),
+                      _frac(r.get("w")), _frac(r.get("h")))
+        if None in (x, y, w, h) or w <= 0 or h <= 0:
+            continue                       # a zero-area box would be invisible
+        rects.append({"x": x, "y": y, "w": min(w, 1.0 - x), "h": min(h, 1.0 - y),
+                      "label": _gloss_str(r.get("label"))})
+        if len(rects) >= OCCLUSION_MAX_RECTS:
+            break
+    if not image or not rects:
+        return None
+    try:
+        target = int(occ.get("target", 0))
+    except (TypeError, ValueError):
+        target = 0
+    if not 0 <= target < len(rects):
+        target = 0
+    return {"image": image, "rects": rects, "target": target}
+
+
+def _clean_media_json(card_type, mj, answer=""):
     """Keep only the render structure a card_type actually uses (steps / items /
-    rubric); drop everything else so a stray or huge blob can't slip in. Returns a
-    JSON string or None. NEVER enters the content_hash — front/back are identity."""
+    rubric / choices); drop everything else so a stray or huge blob can't slip in.
+    Returns a JSON string or None. NEVER enters the content_hash — front/back are
+    identity. `answer` is the card's back, used to drop a distractor that merely
+    repeats the right answer."""
     if not isinstance(mj, dict):
         return None
     out = {}
+    if card_type == "choice":
+        raw = mj.get("choices")
+        if isinstance(raw, list):
+            seen = {db.norm_text(answer)}
+            picks = []
+            for s in raw:
+                t = _cell(s)
+                key = db.norm_text(t)
+                if not t or key in seen:     # never offer the answer as a distractor
+                    continue
+                seen.add(key)
+                picks.append(t)
+                if len(picks) >= CHOICE_MAX:
+                    break
+            if picks:
+                out["choices"] = picks
+    if card_type == "occlusion":
+        occ = _clean_occlusion(mj.get("occlusion"))
+        if occ:
+            out["occlusion"] = occ
     if card_type in _STEP_TYPES:
         raw = mj.get("steps")
         if isinstance(raw, list):     # a string here would iterate per-character
-            steps = [str(s).strip() for s in raw if str(s).strip()]
+            steps = [_cell(s) for s in raw if _cell(s)]
             if steps:
                 out["steps"] = steps[:20]
     if card_type == "list":
         raw = mj.get("items")
         if isinstance(raw, list):
-            items = [str(s).strip() for s in raw if str(s).strip()]
+            items = [_cell(s) for s in raw if _cell(s)]
             if items:
                 out["items"] = items[:30]
     if card_type in _PRODUCE_TYPES:
@@ -156,7 +242,7 @@ def _insert_generated_cards(course_id, material_id, cards, extracted_text=""):
             continue
         conf = c.get("confidence") if c.get("confidence") in ("high", "low") else None
         ctype = _clean_card_type(c.get("card_type"))
-        media_json = _clean_media_json(ctype, c.get("media_json"))
+        media_json = _clean_media_json(ctype, c.get("media_json"), back)
         # E5: a verbatim quote lets the viewer show WHERE this card came from.
         sq = (c.get("source_quote") or "").strip() or None
         loc_json = (json.dumps(db.locate(sq, extracted_text), ensure_ascii=False)
@@ -296,18 +382,123 @@ def recast_card(card_id, method):
     ch = db.content_hash(front, back)
     if ch == card["content_hash"]:
         raise ValueError("変換結果が元のカードと同一でした")
+    # H5: a 多肢選択 recast also returns wrong options. They live in media_json,
+    # which is excluded from the hash, so the answer in `back` stays the identity.
+    media_json = _clean_media_json(method["card_type"], obj, back)
+    cur = db.write_returning(
+        """INSERT OR IGNORE INTO cards
+           (course_id, material_id, card_type, front, back, topic, origin,
+            source_quote, source_loc, media_json, content_hash, state, repetitions,
+            current_interval, current_ease, created_at)
+           VALUES (?,?,?,?,?,?, 'generated', ?, ?, ?, ?, 'new', 0, 0, 2.5, ?)""",
+        (card["course_id"], card["material_id"], method["card_type"], front, back,
+         card["topic"], card["source_quote"], card["source_loc"], media_json, ch,
+         db.now_utc_iso()))
+    if cur.rowcount != 1:
+        raise ValueError("変換結果が既存カードと重複していました")
+    db.write("UPDATE cards SET state='suspended' WHERE id=?", (card_id,))
+    return db.query_one("SELECT * FROM cards WHERE course_id IS ? AND content_hash=?",
+                        (card["course_id"], ch))
+
+
+OCCLUSION_FRONT = "図の隠れている部分は？"
+
+
+def create_occlusion_cards(material_id, rects, prompt=None):
+    """H6 画像オクルージョン: one card per masked region of a material's image.
+    Rectangle drawing only — no AI call.
+
+    THE D-5 PROBLEM, and why the answer is where it is. Every card made from one
+    image shares the same question text, and the hash is
+    sha256(NFKC(front) + \\x1f + NFKC(back)) with media_json excluded. So if the
+    region identity lived only in media_json, all of an image's cards would hash
+    identically and INSERT OR IGNORE would silently collapse them into one.
+    Changing the hash formula to include the region is exactly the D-5 deviation
+    the plan forbids, so instead the region's LABEL is the card's `back` — which
+    is what the learner is recalling anyway. Distinct regions therefore have
+    distinct answers and distinct hashes, with the formula untouched.
+
+    A consequence worth stating: two regions labelled the same on one image ARE
+    the same card, and the second is reported as a duplicate rather than created.
+    """
+    m = db.query_one("SELECT * FROM materials WHERE id=?", (material_id,))
+    if not m:
+        return None
+    image = (m["original_path"] or "").strip()
+    if not image:
+        raise ValueError("この教材には画像がありません")
+    if (m["kind"] or "") == "pdf":
+        raise ValueError("PDFにはまだ対応していません（画像の教材で使えます）")
+    cleaned = _clean_occlusion({"image": image, "rects": rects, "target": 0})
+    if not cleaned:
+        raise ValueError("範囲が正しく指定されていません")
+    labels = [r["label"] for r in cleaned["rects"]]
+    if not all(labels):
+        raise ValueError("それぞれの範囲に答え（ラベル）を入れてください")
+    front = (prompt or "").strip() or OCCLUSION_FRONT
+    now = db.now_utc_iso()
+    made, dup = [], 0
+    for i, r in enumerate(cleaned["rects"]):
+        back = r["label"]
+        mj = json.dumps({"occlusion": dict(cleaned, target=i)}, ensure_ascii=False)
+        ch = db.content_hash(front, back)
+        cur = db.write_returning(
+            """INSERT OR IGNORE INTO cards
+               (course_id, material_id, card_type, front, back, origin,
+                media_json, content_hash, state, repetitions, current_interval,
+                current_ease, created_at)
+               VALUES (?,?, 'occlusion', ?,?, 'extracted', ?,?, 'new', 0, 0, 2.5, ?)""",
+            (m["course_id"], material_id, front, back, mj, ch, now))
+        if cur.rowcount == 1:
+            made.append(db.query_one(
+                "SELECT * FROM cards WHERE course_id IS ? AND content_hash=?",
+                (m["course_id"], ch)))
+        else:
+            dup += 1
+    return {"created": made, "duplicates": dup}
+
+
+REVERSIBLE_TYPES = {"qa", "term"}
+
+
+def reverse_card(card_id):
+    """H5 双方向: make the mirror of a card — front and back swapped.
+
+    Purely mechanical, so NO AI call. Recognising 用語→定義 does not mean you can
+    produce 定義→用語, and only drilling one direction leaves the other untested.
+
+    D-5 falls out for free: the hash is sha256(NFKC(front) + \\x1f + NFKC(back)),
+    so swapping the two yields a genuinely different hash — the mirror is its own
+    card with its own SRS state, and it can never collide with its source. The
+    original is left completely untouched (unlike a recast, which suspends it):
+    the point is to study BOTH directions.
+
+    Only qa/term are reversible. A steps or produce card reversed is nonsense
+    ("here are the solution steps — what was the question?"), so those raise.
+    """
+    card = db.query_one("SELECT * FROM cards WHERE id=?", (card_id,))
+    if not card:
+        return None
+    ctype = (card["card_type"] or "qa").strip().lower()
+    if ctype not in REVERSIBLE_TYPES:
+        raise ValueError("この形式のカードは逆向きにできません（一問一答・用語カードのみ）")
+    front, back = (card["back"] or "").strip(), (card["front"] or "").strip()
+    if not front or not back:
+        raise ValueError("表または裏が空のカードは逆向きにできません")
+    if db.norm_text(front) == db.norm_text(back):
+        raise ValueError("表と裏が同じ内容なので逆向きにできません")
+    ch = db.content_hash(front, back)
     cur = db.write_returning(
         """INSERT OR IGNORE INTO cards
            (course_id, material_id, card_type, front, back, topic, origin,
             source_quote, source_loc, content_hash, state, repetitions,
             current_interval, current_ease, created_at)
-           VALUES (?,?,?,?,?,?, 'generated', ?, ?, ?, 'new', 0, 0, 2.5, ?)""",
-        (card["course_id"], card["material_id"], method["card_type"], front, back,
-         card["topic"], card["source_quote"], card["source_loc"], ch,
+           VALUES (?,?,?,?,?,?, ?, ?, ?, ?, 'new', 0, 0, 2.5, ?)""",
+        (card["course_id"], card["material_id"], ctype, front, back, card["topic"],
+         card["origin"], card["source_quote"], card["source_loc"], ch,
          db.now_utc_iso()))
     if cur.rowcount != 1:
-        raise ValueError("変換結果が既存カードと重複していました")
-    db.write("UPDATE cards SET state='suspended' WHERE id=?", (card_id,))
+        raise ValueError("逆向きのカードはすでにあります")
     return db.query_one("SELECT * FROM cards WHERE course_id IS ? AND content_hash=?",
                         (card["course_id"], ch))
 
@@ -405,6 +596,27 @@ def _parse_glossary(material):
     return out[:GLOSSARY_MAX_TERMS]
 
 
+def clean_glossary_terms(terms):
+    """Normalize a term list from EITHER the model or the user's own editing UI:
+    drop non-dicts and half-filled rows, coerce non-string values, dedupe
+    case-insensitively on (ja, en), and cap the length. Shared so a hand-edited
+    table gets exactly the validation a generated one does."""
+    clean = []
+    seen = set()
+    for t in (terms if isinstance(terms, list) else []):
+        if not isinstance(t, dict):
+            continue
+        ja, en = _gloss_str(t.get("ja")), _gloss_str(t.get("en"))
+        key = ja.lower() + "\x1f" + en.lower()
+        if not ja or not en or key in seen:
+            continue
+        seen.add(key)
+        clean.append({"src": _gloss_str(t.get("src")), "ja": ja, "en": en})
+        if len(clean) >= GLOSSARY_MAX_TERMS:
+            break
+    return clean
+
+
 def build_glossary(material_id, force=False):
     """Phase K: derive ONE canonical term table for a material and cache it on the
     row, so every later prompt about that material spells a term the same way.
@@ -425,23 +637,10 @@ def build_glossary(material_id, force=False):
     with open(GLOSSARY_PROMPT, encoding="utf-8") as f:
         prompt = f.read().format(material=text, limit=GLOSSARY_MAX_TERMS)
     obj = _generate_with_retry(prompt, db.load_settings().get("model_text"))
-    terms = obj.get("terms") if isinstance(obj, dict) else None
-    clean = []
-    seen = set()
-    for t in (terms if isinstance(terms, list) else []):
-        if not isinstance(t, dict):
-            continue
-        ja, en = _gloss_str(t.get("ja")), _gloss_str(t.get("en"))
-        key = ja.lower() + "\x1f" + en.lower()
-        if not ja or not en or key in seen:
-            continue
-        seen.add(key)
-        clean.append({"src": _gloss_str(t.get("src")), "ja": ja, "en": en})
-        if len(clean) >= GLOSSARY_MAX_TERMS:
-            break
     # A shapeless reply is cached as "built, no terms" like any other empty result:
     # returning early without writing would re-run this AI call on every later
     # generation for this material, forever.
+    clean = clean_glossary_terms(obj.get("terms") if isinstance(obj, dict) else None)
     db.write("UPDATE materials SET glossary_json=? WHERE id=?",
              (json.dumps({"terms": clean}, ensure_ascii=False), material_id))
     return clean

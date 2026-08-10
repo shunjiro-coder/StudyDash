@@ -238,3 +238,52 @@ def test_ingest_glossary_terms_tolerates_bad_json():
     db.write("UPDATE materials SET glossary_json=? WHERE id=?", ("not json", mid))
     r = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
     assert ingest._glossary_terms(r) == []
+
+
+# -------------------- K: the glossary editing UI's endpoints --------------------
+def test_glossary_endpoint_get_and_save(client, monkeypatch):
+    mid = _material()
+    assert client.get(f"/api/materials/{mid}/glossary").get_json()["glossary"] == []
+    body = client.post(f"/api/materials/{mid}/glossary", json={"terms": [
+        {"ja": "鋳型", "en": "template"},
+        {"ja": "", "en": "dropped"},                  # half-filled -> dropped
+        {"ja": "鋳型", "en": "TEMPLATE"},              # dup (case-insensitive)
+        "not a dict",
+    ]}).get_json()
+    assert body["ok"] and [t["en"] for t in body["glossary"]] == ["template"]
+    # and it now binds later generation for this material
+    assert "template=鋳型" in generate._glossary_line(mid, build=False)
+
+
+def test_hand_edited_glossary_is_not_overwritten_by_a_later_build(monkeypatch):
+    mid = _material()
+    db.write("UPDATE materials SET glossary_json=? WHERE id=?",
+             (json.dumps({"terms": [{"ja": "私の訳語", "en": "mine"}]}), mid))
+    monkeypatch.setattr(generate, "_generate_with_retry",
+                        lambda *a, **k: pytest.fail("a user edit must not trigger a rebuild"))
+    assert [t["ja"] for t in generate.build_glossary(mid)] == ["私の訳語"]
+
+
+def test_glossary_endpoint_rebuild_forces_a_new_table(client, monkeypatch):
+    mid = _material()
+    db.write("UPDATE materials SET glossary_json=? WHERE id=?",
+             (json.dumps({"terms": [{"ja": "古い", "en": "old"}]}), mid))
+    monkeypatch.setattr(generate, "_generate_with_retry", lambda *a, **k: TERMS)
+    body = client.post(f"/api/materials/{mid}/glossary", json={"rebuild": True}).get_json()
+    assert body["ok"] and [t["ja"] for t in body["glossary"]] == ["ヌクレオチド", "鋳型"]
+
+
+def test_glossary_endpoint_rejects_bad_payload_and_missing_material(client):
+    mid = _material()
+    assert client.post(f"/api/materials/{mid}/glossary", json={"terms": "nope"}).get_json()["ok"] is False
+    assert client.post("/api/materials/999999/glossary", json={"terms": []}).status_code == 404
+
+
+def test_glossary_endpoint_survives_ai_failure(client, monkeypatch):
+    mid = _material()
+
+    def boom(*a, **k):
+        raise generate.ai.ClaudeError("no ai")
+    monkeypatch.setattr(generate, "_generate_with_retry", boom)
+    res = client.post(f"/api/materials/{mid}/glossary", json={"rebuild": True})
+    assert res.status_code == 200 and res.get_json()["ok"] is False

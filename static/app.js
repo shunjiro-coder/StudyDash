@@ -393,6 +393,10 @@ async function renderReview() {
 
 async function loadReviewQueue(mode, opts = {}) {
   let cards = [];
+  // G3: the chosen strategies travel with the request — interleaving is done
+  // server-side so it composes with the queue's due-first ordering.
+  const strat = activeStrategies();
+  const stratQS = strat.map((s) => "strategy=" + encodeURIComponent(s)).join("&");
   try {
     if (mode === "weak") cards = await api("/api/review/weak");
     else if (mode === "drill") cards = await api("/api/review/drill?" + new URLSearchParams(opts));
@@ -400,15 +404,186 @@ async function loadReviewQueue(mode, opts = {}) {
     else if (mode === "material") {
       // repeat material_id= for a merge across several materials (J)
       const qs = (opts.material_ids || []).map((id) => "material_id=" + encodeURIComponent(id)).join("&");
-      cards = await api("/api/review/by-material?" + qs);
+      cards = await api("/api/review/by-material?" + qs + (stratQS ? "&" + stratQS : ""));
     }
-    else { const q = await api("/api/review/queue"); cards = q.cards; }
+    else { const q = await api("/api/review/queue" + (stratQS ? "?" + stratQS : "")); cards = q.cards; }
   } catch (e) { toast("読み込み失敗"); return; }
-  S.review = { queue: cards, idx: 0, revealed: false, mode, label: opts.label || "" };
+  S.review = { queue: cards, idx: 0, revealed: false, mode, label: opts.label || "",
+               strategies: strat };
   if (!cards.length) toast("対象カードがありません");
   switchTab("review");
 }
 function startReview() { loadReviewQueue("normal"); }
+
+// ---- G3: session review strategies -------------------------------------
+// A layer on top of SM-2. None of these touch scheduling or card identity —
+// they change the ORDER cards arrive in and how the question is asked. The
+// choice persists in localStorage so a session picks up where you left off.
+const STRATEGIES = [
+  { id: "retrieval", icon: "✍️", name: "想起練習",
+    hint: "答えを見る前に、自分の言葉で書き出す。思い出す努力そのものが記憶を作ります。" },
+  { id: "interleave", icon: "🔀", name: "インターリーブ",
+    hint: "続けて同じ教材が出ないように混ぜる。まとめて解くより手応えは重いですが、定着します。" },
+  { id: "recognition", icon: "🔘", name: "選択式",
+    hint: "入力ではなく4択で答える。同じコースの他のカードの答えが選択肢になります。" },
+  { id: "elaborate", icon: "💡", name: "精緻化",
+    hint: "答え合わせのあと「なぜ？何とつながる？」を一言で説明します。" },
+];
+function activeStrategies() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("review_strategies") || "null");
+    if (Array.isArray(raw)) return raw.filter((s) => STRATEGIES.some((x) => x.id === s));
+  } catch (e) {}
+  return ["retrieval"];                 // the default: recall, not re-reading
+}
+function setStrategies(list) {
+  try { localStorage.setItem("review_strategies", JSON.stringify(list)); } catch (e) {}
+}
+function hasStrategy(id) { return (S.review.strategies || []).indexOf(id) >= 0; }
+
+// G3 精緻化: after the answer, ask WHY. Explaining it to yourself is what turns a
+// recognised fact into a usable one. The prompt varies by card so it does not
+// become wallpaper; the note is scratch only — deliberately not persisted, since
+// storing it would change what a card IS and drag in the D-5 identity question.
+const ELAB_PROMPTS = [
+  "なぜそうなるのか、一言で説明してみよう。",
+  "これは今まで習った何とつながる？",
+  "自分の言葉で言い換えるとどうなる？",
+  "これが成り立たない例／例外はある？",
+  "友達に説明するなら最初の一文は？",
+];
+function elaborateBox(card, r) {
+  const box = el("div", "rc-elab");
+  box.appendChild(el("div", "rc-elab-t", "💡 " + ELAB_PROMPTS[(card.id || 0) % ELAB_PROMPTS.length]));
+  const ta = el("textarea", "rc-input");
+  ta.placeholder = "ここは記録されません。声に出すだけでも効果があります。";
+  ta.value = r.elab || "";
+  ta.oninput = () => { r.elab = ta.value; };
+  ta.onclick = (e) => e.stopPropagation();
+  box.appendChild(ta);
+  return box;
+}
+
+// H6 画像オクルージョン: the image with every region masked; the one this card
+// asks about is highlighted, and revealing lifts only that mask. Rectangles are
+// stored as FRACTIONS of the image, so a card drawn on a phone lines up on a
+// laptop no matter what size the image renders at.
+function occlusionBox(occ, revealed) {
+  const wrap = el("div", "occ-wrap");
+  const img = el("img", "occ-img");
+  img.src = "/" + String(occ.image || "").replace(/^\/+/, "");
+  img.alt = "";
+  img.onerror = () => { wrap.appendChild(el("div", "review-hint", "画像を読み込めません")); img.remove(); };
+  wrap.appendChild(img);
+  (occ.rects || []).forEach((r, i) => {
+    const isTarget = i === occ.target;
+    if (isTarget && revealed) return;            // lift only the asked-about mask
+    const box = el("div", "occ-rect" + (isTarget ? " target" : ""));
+    box.style.left = (r.x * 100) + "%";
+    box.style.top = (r.y * 100) + "%";
+    box.style.width = (r.w * 100) + "%";
+    box.style.height = (r.h * 100) + "%";
+    wrap.appendChild(box);
+  });
+  return wrap;
+}
+
+// H5 多肢選択: the card's own stored distractors + its real answer. Shares the
+// option UI with G3 recognition, but needs no fetch — and after the reveal it can
+// mark which option was right, since the answer is known locally.
+function choiceBox(card, r, choices) {
+  const real = (card.back || "").trim();
+  if (!r.opts || r.optsFor !== card.id) {
+    const opts = choices.slice(0, 5).concat([real]);
+    const k = (card.id || 0) % opts.length;      // deterministic slot for the answer
+    r.opts = opts.slice(k).concat(opts.slice(0, k));
+    r.optsFor = card.id;
+  }
+  const box = el("div", "rc-choices");
+  r.opts.forEach((o) => {
+    const b = el("button", "rc-choice" + (r.pick === o ? " picked" : ""));
+    b.appendChild(mdInline(o));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      box.querySelectorAll(".rc-choice").forEach((x) => x.classList.remove("picked"));
+      b.classList.add("picked");
+      r.pick = o;
+    };
+    box.appendChild(b);
+  });
+  box.appendChild(el("div", "review-hint", "選んでからタップして答え合わせ"));
+  return box;
+}
+
+// G3 選択式: 4 options — the real answer plus distractors pulled from other cards
+// in the same course. Options are placed by a deterministic per-card offset, so
+// the answer is not always in the same slot but a re-render does not move it.
+function recognitionBox(card, r) {
+  const box = el("div", "rc-choices");
+  const real = (card.back || "").trim();
+  if (r.opts && r.optsFor === card.id) {
+    const pick = (val, btn) => {
+      box.querySelectorAll(".rc-choice").forEach((b) => b.classList.remove("picked"));
+      btn.classList.add("picked");
+      r.pick = val;
+    };
+    r.opts.forEach((o) => {
+      const b = el("button", "rc-choice" + (r.pick === o ? " picked" : ""));
+      b.appendChild(mdInline(o));
+      b.onclick = (e) => { e.stopPropagation(); pick(o, b); };
+      box.appendChild(b);
+    });
+    box.appendChild(el("div", "review-hint", "選んでからタップして答え合わせ"));
+    return box;
+  }
+  box.appendChild(el("div", "review-hint", "選択肢を準備中…"));
+  api(`/api/cards/${card.id}/distractors?limit=3`).then((d) => {
+    const ds = (d && d.distractors) || [];
+    if (!ds.length) { r.opts = null; r.optsFor = card.id; renderReview(); return; }
+    const opts = ds.concat([real]);
+    // deterministic rotation by card id — stable across re-renders
+    const k = (card.id || 0) % opts.length;
+    r.opts = opts.slice(k).concat(opts.slice(0, k));
+    r.optsFor = card.id;
+    renderReview();
+  }).catch(() => { r.opts = null; r.optsFor = card.id; });
+  return box;
+}
+
+function strategyPicker() {
+  const wrap = el("div", "strat-wrap");
+  const head = el("div", "strat-head");
+  head.appendChild(el("span", "strat-title", "復習のやり方"));
+  const hint = el("span", "strat-sub", "セッションごとに選べます");
+  head.appendChild(hint);
+  wrap.appendChild(head);
+  const active = activeStrategies();
+  const row = el("div", "strat-chips");
+  STRATEGIES.forEach((st) => {
+    const on = active.indexOf(st.id) >= 0;
+    const b = el("button", "strat-chip" + (on ? " on" : ""));
+    b.appendChild(el("span", "strat-ico", st.icon));
+    b.appendChild(el("span", "", st.name));
+    b.title = st.hint;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.onclick = () => {
+      const cur = activeStrategies();
+      const i = cur.indexOf(st.id);
+      if (i >= 0) cur.splice(i, 1); else cur.push(st.id);
+      setStrategies(cur);
+      const box = wrap.parentNode;
+      wrap.replaceWith(strategyPicker());
+      if (box) { /* re-rendered in place */ }
+    };
+    row.appendChild(b);
+  });
+  wrap.appendChild(row);
+  const on = STRATEGIES.filter((st) => active.indexOf(st.id) >= 0);
+  wrap.appendChild(el("div", "strat-hint",
+    on.length ? on.map((st) => st.name + "：" + st.hint).join("　/　")
+              : "どれも選んでいません（そのままタップして答えを見る形式）"));
+  return wrap;
+}
 
 async function renderReviewHome(p) {
   // finished session banner
@@ -429,6 +604,7 @@ async function renderReviewHome(p) {
     c.appendChild(mrow);
   }
   if (due > 0) { const b = el("button", "btn primary", "始める"); b.style.marginTop = "12px"; b.onclick = () => loadReviewQueue("normal"); c.appendChild(b); }
+  c.appendChild(strategyPicker());
   p.appendChild(c);
 
   // J — study by (study) material: pick one material's cards, or check several and
@@ -578,6 +754,10 @@ function renderCard(p) {
   face.appendChild(isCloze
     ? el("div", "review-front", clozeText(dispFront, dispBack, r.revealed))
     : elMd("div", "review-front", dispFront));
+  // H6: the masked image sits right under the question, on both faces
+  if (ct === "occlusion" && mj.occlusion) {
+    face.appendChild(occlusionBox(mj.occlusion, r.revealed));
+  }
 
   if (!r.revealed) {
     if (PRODUCE_TYPES.has(ct)) {
@@ -594,13 +774,36 @@ function renderCard(p) {
       face.appendChild(el("div", "review-hint", "手順を思い出してからタップ"));
     } else if (isCloze) {
       face.appendChild(el("div", "review-hint", "空所に入る語を考えてタップ"));
+    } else if (ct === "choice" && Array.isArray(mj.choices) && mj.choices.length) {
+      // H5 多肢選択: this card carries its OWN distractors, so no fetch is needed
+      face.appendChild(choiceBox(card, r, mj.choices));
+    } else if (hasStrategy("recognition")) {
+      // G3 選択式: options built from other cards' answers (fetched per card)
+      face.appendChild(recognitionBox(card, r));
+    } else if (hasStrategy("retrieval")) {
+      // G3 想起練習: make the recall attempt explicit before the answer shows
+      const ta = el("textarea", "rc-input");
+      ta.placeholder = "答えを思い出して書いてみよう（見る前に）";
+      ta.value = r.draft || ""; ta.oninput = () => { r.draft = ta.value; };
+      ta.onclick = (e) => e.stopPropagation();
+      face.appendChild(ta);
+      face.appendChild(el("div", "review-hint", "書けたらタップして答え合わせ"));
     } else {
       face.appendChild(el("div", "review-hint", "タップして答えを見る"));
     }
   } else {
     face.appendChild(el("hr", "review-sep"));
-    if ((PRODUCE_TYPES.has(ct) || ct === "compute") && r.draft) {
+    if ((PRODUCE_TYPES.has(ct) || ct === "compute" || hasStrategy("retrieval")) && r.draft) {
       const y = el("div", "rc-yourans"); y.appendChild(el("div", "rc-yourans-t", "あなたの答え")); y.appendChild(el("div", "", r.draft)); face.appendChild(y);
+    }
+    if (r.pick != null) {
+      // the answer is known locally, so say plainly whether the pick was right —
+      // the 4-level self-grade below still decides the scheduling (H5 keeps it)
+      const ok = String(r.pick).trim() === String(card.back || "").trim();
+      const p = el("div", "rc-yourans" + (ok ? " ok" : " ng"));
+      p.appendChild(el("div", "rc-yourans-t", ok ? "選んだ答え（正解）" : "選んだ答え（不正解）"));
+      p.appendChild(elMd("div", "", r.pick));
+      face.appendChild(p);
     }
     if (STEP_TYPES.has(ct)) {
       const steps = (Array.isArray(mj.steps) && mj.steps.length) ? mj.steps : _lines(card.back);
@@ -616,6 +819,7 @@ function renderCard(p) {
       const ol = el("ol", "rc-steps"); mj.steps.forEach((s) => ol.appendChild(elMd("li", "", s))); face.appendChild(ol);
     }
     if (mj.rubric) { const rb = el("div", "rc-rubric"); rb.appendChild(el("div", "rc-rubric-t", "自己採点の観点")); rb.appendChild(elMd("div", "", mj.rubric)); face.appendChild(rb); }
+    if (hasStrategy("elaborate")) face.appendChild(elaborateBox(card, r));
     if (card.thumb_url) { const img = el("img", "review-thumb"); img.src = card.thumb_url; img.alt = ""; img.onerror = () => img.remove(); face.appendChild(img); }
     if (card.source_quote) { const q = el("div", "cp-quote"); q.textContent = "「" + card.source_quote + "」"; face.appendChild(q); }
     if (card.material_id && (card.source_loc || card.source_quote)) {
@@ -665,7 +869,10 @@ async function grade(g) {
   const card = r.queue[r.idx];
   try { await api("/api/review/answer", { method: "POST", body: JSON.stringify({ card_id: card.id, grade: g }) }); }
   catch (e) { toast("記録に失敗"); return; }
+  // every per-card scratch field must clear, or the next card inherits this
+  // card's typed answer / chosen option / generated choices (G3)
   r.idx++; r.revealed = false; r.draft = "";
+  r.pick = null; r.opts = null; r.optsFor = null; r.elab = "";
   await refreshMeta();
   renderReview();
 }
@@ -1207,10 +1414,13 @@ function studyModesSection(m, ov) {
   };
   const cQuiz = smChip("📝", "クイズ", m.quiz ? `${(m.quiz.questions || []).length}問 作成済み` : "テスト形式で理解確認");
   const cSum = smChip("📄", "まとめ", m.summary_guide ? "作成済み" : "要点を整理");
+  const glossN = (m.glossary || []).length;
+  const cGloss = smChip("📖", "用語表", glossN ? `${glossN}語` : "訳語をそろえる");
   const body = el("div", "sm-body");
   cQuiz.onclick = () => { setActiveChip(chips, cQuiz); openQuizPanel(m, ov, body); };
   cSum.onclick = () => { setActiveChip(chips, cSum); openSummaryPanel(m, ov, body); };
-  chips.appendChild(cFlash); chips.appendChild(cQuiz); chips.appendChild(cSum);
+  cGloss.onclick = () => { setActiveChip(chips, cGloss); openGlossaryPanel(m, ov, body); };
+  chips.appendChild(cFlash); chips.appendChild(cQuiz); chips.appendChild(cSum); chips.appendChild(cGloss);
   sec.appendChild(chips); sec.appendChild(body);
   return sec;
 }
@@ -1226,6 +1436,88 @@ function defaultGenLang(m) {
   const g = (S.meta && S.meta.content_lang) || "auto";
   if (g === "ja" || g === "en") return g;
   return detectLang(m && m.extracted_text);
+}
+
+// ---- K: term-table panel (inside the material modal) ----
+// The glossary binds every later card, quiz, summary and translation for this
+// material, so it is worth showing and worth letting the user correct. A hand
+// edit is authoritative: only 作り直す re-derives it from the material.
+function openGlossaryPanel(m, ov, host) {
+  host.innerHTML = "";
+  const panel = el("div", "sm-panel");
+  panel.appendChild(el("div", "sm-panel-h", "📖 用語表"));
+  panel.appendChild(el("div", "sm-panel-sub",
+    "この教材の専門用語の対訳表です。ここを直すと、これから作るカード・クイズ・まとめ・翻訳が" +
+    "すべて同じ訳語を使います（表記ゆれを防ぎます）。"));
+
+  const rows = el("div", "gl-rows");
+  const addRow = (t) => {
+    const row = el("div", "gl-row");
+    const ja = el("input", "gl-in"); ja.value = (t && t.ja) || ""; ja.placeholder = "日本語";
+    const en = el("input", "gl-in"); en.value = (t && t.en) || ""; en.placeholder = "English";
+    const del = el("button", "btn small ghost gl-del", "✕");
+    del.title = "この行を削除";
+    del.onclick = () => row.remove();
+    row.appendChild(ja); row.appendChild(el("span", "gl-eq", "＝")); row.appendChild(en);
+    row.appendChild(del);
+    rows.appendChild(row);
+    return row;
+  };
+  (m.glossary || []).forEach(addRow);
+  if (!(m.glossary || []).length) {
+    panel.appendChild(el("div", "sm-existing",
+      "まだ用語表がありません。「AIで作り直す」で教材から自動作成できます（数十秒）。"));
+  }
+  panel.appendChild(rows);
+
+  const addBtn = el("button", "btn small ghost", "＋ 用語を追加");
+  addBtn.onclick = () => { const r = addRow(null); const i = r.querySelector("input"); if (i) i.focus(); };
+  panel.appendChild(addBtn);
+
+  const acts = el("div", "sm-actions");
+  const save = el("button", "btn primary", "保存");
+  const rebuild = el("button", "btn ghost", "AIで作り直す");
+
+  const collect = () => Array.from(rows.querySelectorAll(".gl-row")).map((r) => {
+    const ins = r.querySelectorAll("input");
+    return { ja: ins[0].value.trim(), en: ins[1].value.trim() };
+  }).filter((t) => t.ja && t.en);
+
+  save.onclick = async () => {
+    const restore = btnBusy(save, "保存中…");
+    try {
+      const r = await api(`/api/materials/${m.id}/glossary`,
+        { method: "POST", body: JSON.stringify({ terms: collect() }) });
+      if (!r.ok) { toast(r.message || "保存に失敗しました"); return; }
+      m.glossary = r.glossary;
+      toast(`用語表を保存しました（${r.glossary.length}語）`, true);
+      openMaterial(m.id);
+    } catch (e) {
+      toast("保存に失敗: " + e.message);
+    } finally { restore(); }
+  };
+
+  rebuild.onclick = async () => {
+    if ((m.glossary || []).length &&
+        !confirm("いまの用語表を破棄して、AIで作り直しますか？")) return;
+    const restore = btnBusy(rebuild, "作成中…");
+    const banner = busyBanner("用語表を作成中…（30〜60秒ほどかかることがあります）");
+    panel.appendChild(banner);
+    try {
+      const r = await api(`/api/materials/${m.id}/glossary`,
+        { method: "POST", body: JSON.stringify({ rebuild: true }) });
+      if (!r.ok) { toast(r.message || "作成に失敗しました"); return; }
+      m.glossary = r.glossary;
+      toast(`用語表を作りました（${r.glossary.length}語）`, true);
+      openMaterial(m.id);
+    } catch (e) {
+      toast("作成に失敗: " + e.message);
+    } finally { restore(); banner.remove(); }
+  };
+
+  acts.appendChild(save); acts.appendChild(rebuild);
+  panel.appendChild(acts);
+  host.appendChild(panel);
 }
 
 // ---- Quiz setup panel (inside the material modal) ----
@@ -1647,8 +1939,123 @@ function buildViewer(m) {
   const open = el("a", "btn small ghost", "元ファイルを新しいタブで開く ↗");
   open.href = url; open.target = "_blank"; open.rel = "noopener";
   bar.appendChild(open);
+  // H6: occlusion only makes sense on an image (a PDF page is not addressable
+  // by fraction here), so the entry point only appears for one.
+  if (m.kind !== "pdf") {
+    const occ = el("button", "btn small ghost", "🫥 かくして覚える");
+    occ.title = "図の上に四角を描いて、隠した部分を答えるカードを作ります";
+    occ.onclick = () => openOcclusionEditor(m, wrap);
+    bar.appendChild(occ);
+  }
   wrap.appendChild(bar);
   return wrap;
+}
+
+// H6 画像オクルージョン editor: drag on the image to draw a box, name what it
+// hides, and each box becomes one card. Pointer events cover mouse, touch and
+// pen with one code path; coordinates are stored as fractions of the image so
+// they survive any later render size.
+function openOcclusionEditor(m, host) {
+  if (host.querySelector(".occ-edit")) return;      // already open
+  const panel = el("div", "occ-edit");
+  panel.appendChild(el("div", "sm-panel-h", "🫥 かくして覚える"));
+  panel.appendChild(el("div", "sm-panel-sub",
+    "図の上をドラッグして、隠したい部分を四角で囲みます。四角ごとに「答え」を入れると、" +
+    "それぞれが1枚のカードになります。"));
+
+  const stage = el("div", "occ-stage");
+  const img = el("img", "occ-img");
+  img.src = m.thumb_url; img.alt = ""; img.draggable = false;
+  stage.appendChild(img);
+  const rects = [];
+  const listBox = el("div", "occ-list");
+
+  const redraw = () => {
+    stage.querySelectorAll(".occ-rect").forEach((n) => n.remove());
+    rects.forEach((r, i) => {
+      const b = el("div", "occ-rect target");
+      b.style.left = (r.x * 100) + "%"; b.style.top = (r.y * 100) + "%";
+      b.style.width = (r.w * 100) + "%"; b.style.height = (r.h * 100) + "%";
+      b.appendChild(el("span", "occ-num", String(i + 1)));
+      stage.appendChild(b);
+    });
+    listBox.innerHTML = "";
+    rects.forEach((r, i) => {
+      const row = el("div", "occ-row");
+      row.appendChild(el("span", "occ-badge", String(i + 1)));
+      const inp = el("input", "gl-in");
+      inp.placeholder = "ここに隠れているものの名前（答え）";
+      inp.value = r.label || "";
+      inp.oninput = () => { r.label = inp.value; };
+      const del = el("button", "btn small ghost gl-del", "✕");
+      del.onclick = () => { rects.splice(i, 1); redraw(); };
+      row.appendChild(inp); row.appendChild(del);
+      listBox.appendChild(row);
+    });
+  };
+
+  let start = null, ghost = null;
+  const frac = (e) => {
+    const b = img.getBoundingClientRect();
+    return { x: Math.min(1, Math.max(0, (e.clientX - b.left) / (b.width || 1))),
+             y: Math.min(1, Math.max(0, (e.clientY - b.top) / (b.height || 1))) };
+  };
+  stage.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".occ-rect")) return;
+    e.preventDefault();
+    start = frac(e);
+    ghost = el("div", "occ-rect ghost");
+    stage.appendChild(ghost);
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!start || !ghost) return;
+    const p = frac(e);
+    ghost.style.left = (Math.min(start.x, p.x) * 100) + "%";
+    ghost.style.top = (Math.min(start.y, p.y) * 100) + "%";
+    ghost.style.width = (Math.abs(p.x - start.x) * 100) + "%";
+    ghost.style.height = (Math.abs(p.y - start.y) * 100) + "%";
+  });
+  const finish = (e) => {
+    if (!start) return;
+    const p = frac(e);
+    const r = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y),
+                w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y), label: "" };
+    start = null;
+    if (ghost) { ghost.remove(); ghost = null; }
+    if (r.w < 0.02 || r.h < 0.02) return;      // a stray tap is not a rectangle
+    rects.push(r);
+    redraw();
+    const last = listBox.querySelector(".occ-row:last-child .gl-in");
+    if (last) last.focus();
+  };
+  stage.addEventListener("pointerup", finish);
+  stage.addEventListener("pointercancel", () => { start = null; if (ghost) { ghost.remove(); ghost = null; } });
+
+  panel.appendChild(stage);
+  panel.appendChild(listBox);
+
+  const acts = el("div", "sm-actions");
+  const save = el("button", "btn primary", "カードにする");
+  save.onclick = async () => {
+    if (!rects.length) { toast("先に図の上をドラッグして範囲を囲んでください"); return; }
+    if (rects.some((r) => !(r.label || "").trim())) { toast("すべての範囲に答えを入れてください"); return; }
+    const restore = btnBusy(save, "作成中…");
+    try {
+      const res = await api(`/api/materials/${m.id}/occlusion`,
+        { method: "POST", body: JSON.stringify({ rects }) });
+      if (!res.ok) { toast(res.message || "作成に失敗しました"); return; }
+      const dup = res.duplicates ? `（同じ答えの${res.duplicates}件は既存とまとめました）` : "";
+      toast(`${res.created.length}枚のカードを作りました${dup}`, true);
+      openMaterial(m.id);
+    } catch (e) { toast("作成に失敗: " + e.message); }
+    finally { restore(); }
+  };
+  const cancel = el("button", "btn ghost", "やめる");
+  cancel.onclick = () => panel.remove();
+  acts.appendChild(save); acts.appendChild(cancel);
+  panel.appendChild(acts);
+  host.appendChild(panel);
 }
 // A zoomable viewer image that, if it fails to load, cleanly swaps itself for a
 // labeled placeholder with a one-tap 再読み込み (cache-busted) — so a missing or
@@ -1704,6 +2111,25 @@ function cardPreview(c, low) {
     finally { restore(); }
   };
   d.appendChild(trBtn); d.appendChild(trBox);
+
+  // H5 双方向: study the other direction too. Mechanical swap, no AI — and the
+  // mirror is a separate card, so the original keeps its own SRS history.
+  if (["qa", "term"].indexOf((c.card_type || "qa").toLowerCase()) >= 0) {
+    const revBtn = el("button", "btn small ghost cp-trans", "🔁 逆向きを作る");
+    revBtn.title = "裏→表のカードを作ります（元のカードはそのまま残ります）";
+    revBtn.onclick = async (e) => {
+      e.stopPropagation();
+      const restore = btnBusy(revBtn, "作成中…");
+      try {
+        const res = await api(`/api/cards/${c.id}/reverse`, { method: "POST" });
+        if (!res.ok) { toast(res.message || "作れませんでした"); return; }
+        toast("逆向きのカードを作りました", true);
+        if (c.material_id) openMaterial(c.material_id);
+      } catch (err) { toast("作成に失敗: " + err.message); }
+      finally { restore(); }
+    };
+    d.appendChild(revBtn);
+  }
   return d;
 }
 

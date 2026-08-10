@@ -334,3 +334,89 @@ def by_materials(tokens, limit=80):
         "ORDER BY (c.state='new'), (c.next_due_at IS NULL), c.next_due_at ASC, "
         "c.id ASC LIMIT ?", params + [limit])
     return [_card_out(r, exam_courses) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# G3: session review strategies — a layer ON TOP of SM-2, not a replacement.
+# Nothing here touches scheduling, card state or the D-5 identity: a strategy
+# only changes the ORDER cards arrive in and how the UI asks the question. No
+# schema change, so a strategy can be switched on or off per session freely.
+# --------------------------------------------------------------------------
+VALID_STRATEGIES = ("retrieval", "interleave", "recognition", "elaborate")
+
+
+def clean_strategies(raw):
+    """Normalize a strategy list from a query string, request body or settings."""
+    if isinstance(raw, str):
+        raw = raw.replace(",", " ").split()
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out = []
+    for s in raw:
+        s = str(s).strip().lower()
+        if s in VALID_STRATEGIES and s not in out:
+            out.append(s)
+    return out
+
+
+def interleave(cards):
+    """Interleaving: consecutive cards should come from DIFFERENT materials, since
+    blocked practice (all of one topic, then all of the next) feels easier but
+    retains worse. Round-robins the material groups while preserving each group's
+    own due-first order, so SM-2's urgency ordering survives within a topic.
+
+    Deterministic — no RNG — so a reload does not reshuffle mid-session.
+    """
+    groups = {}
+    order = []
+    for c in cards:
+        key = c.get("material_id")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(c)
+    out = []
+    i = 0
+    while len(out) < len(cards):
+        placed = False
+        for key in order:
+            g = groups[key]
+            if i < len(g):
+                out.append(g[i])
+                placed = True
+        if not placed:      # every group exhausted (guards a malformed input)
+            break
+        i += 1
+    return out
+
+
+def distractors_for(card_id, limit=3):
+    """Recognition mode (出題形式: 入力↔再認): plausible wrong options for a card,
+    taken from OTHER cards' answers in the same course. Drawn from real study
+    material rather than invented, so no AI call and no new dependency.
+
+    Prefers answers of a similar length to the real one — a conspicuously short or
+    long option gives the answer away. Deterministic ordering.
+    """
+    card = db.query_one("SELECT * FROM cards WHERE id=?", (card_id,))
+    if not card:
+        return []
+    real = (card["back"] or "").strip()
+    rows = db.query(
+        "SELECT back FROM cards WHERE course_id=? AND id<>? "
+        "AND state NOT IN ('suspended','proposed') AND back IS NOT NULL",
+        (card["course_id"], card_id))
+    seen = {db.norm_text(real)}
+    cand = []
+    for r in rows:
+        b = (r["back"] or "").strip()
+        key = db.norm_text(b)
+        if not b or key in seen:
+            continue
+        seen.add(key)
+        cand.append(b)
+    if not cand:
+        return []
+    target = len(real)
+    cand.sort(key=lambda b: (abs(len(b) - target), b))
+    return cand[:max(0, int(limit))]

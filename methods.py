@@ -17,6 +17,9 @@ BUILTINS = [
      "instruction": "重要語を空欄「___」にした一文(front)と、空欄に入る語(back)にする。"},
     {"id": "steps", "name": "解法ステップ", "desc": "手順で覚える", "card_type": "steps",
      "instruction": "問い(front)と、解法の手順・着眼点(back)。最終的な数値の答えは書かない。"},
+    {"id": "choice", "name": "多肢選択", "desc": "4択で選ぶ", "card_type": "choice",
+     "instruction": "問い(front)と正解(back)に加えて、もっともらしい誤答を3つ choices に入れる。"
+                    "誤答は教材の内容から作り、正解と紛らわしい長さ・粒度にそろえる。"},
     {"id": "elaborate", "name": "自己説明", "desc": "自分の言葉で説明",
      "card_type": "elaborate",
      "instruction": "「〜を自分の言葉で説明してみよう」という問い(front)と、模範となる説明(back)にする。"},

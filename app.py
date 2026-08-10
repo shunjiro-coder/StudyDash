@@ -603,6 +603,37 @@ def api_material_quiz(mid):
     return jsonify({"ok": True, "quiz": quiz_dict(qz)})
 
 
+@app.route("/api/materials/<int:mid>/glossary", methods=["GET", "POST"])
+def api_material_glossary(mid):
+    """K: read / rebuild / hand-edit a material's canonical term table.
+
+    POST {"terms": [...]} saves the user's own table — an edit is authoritative and
+    is NOT overwritten by a later build. POST {"rebuild": true} re-derives it from
+    the material (one AI call). The saved table then binds every later card, quiz,
+    summary and translation for this material."""
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    if request.method == "GET":
+        m = db.query_one("SELECT * FROM materials WHERE id=?", (mid,))
+        return jsonify({"glossary": ingest._glossary_terms(m)})
+    data = request.get_json(silent=True) or {}
+    if data.get("rebuild"):
+        try:
+            terms = generate.build_glossary(mid, force=True)
+        except generate.ai.ClaudeError as e:
+            return jsonify({"ok": False, "message": f"AI呼び出し失敗: {str(e)[:200]}"}), 200
+        except ValueError as e:
+            return jsonify({"ok": False, "message": f"用語表を作れませんでした: {str(e)[:200]}"}), 200
+        return jsonify({"ok": True, "glossary": terms})
+    raw = data.get("terms")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "message": "terms が不正です"}), 200
+    terms = generate.clean_glossary_terms(raw)
+    db.write("UPDATE materials SET glossary_json=? WHERE id=?",
+             (json.dumps({"terms": terms}, ensure_ascii=False), mid))
+    return jsonify({"ok": True, "glossary": terms})
+
+
 @app.route("/api/materials/<int:mid>/summary", methods=["POST"])
 def api_material_summary(mid):
     if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
@@ -701,7 +732,62 @@ def api_cards():
 # --------------------------------------------------------------------------
 @app.route("/api/review/queue")
 def api_review_queue():
-    return jsonify(srs.get_queue())
+    q = srs.get_queue()
+    # G3: strategies only reorder / re-ask. Additive query param, additive response
+    # key — the existing contract ({cards,new_count,due_count}) is untouched.
+    strategies = srs.clean_strategies(request.args.getlist("strategy") or
+                                      request.args.get("strategies"))
+    if "interleave" in strategies:
+        q["cards"] = srs.interleave(q["cards"])
+    q["strategies"] = strategies
+    return jsonify(q)
+
+
+@app.route("/api/materials/<int:mid>/occlusion", methods=["POST"])
+def api_material_occlusion(mid):
+    """H6: create one image-occlusion card per drawn region. No AI call."""
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    rects = data.get("rects")
+    if not isinstance(rects, list) or not rects:
+        return jsonify({"ok": False, "message": "範囲が指定されていません"}), 200
+    try:
+        res = generate.create_occlusion_cards(mid, rects, data.get("prompt"))
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)[:200]}), 200
+    if res is None:
+        abort(404)
+    return jsonify({"ok": True, "created": [card_dict(c) for c in res["created"]],
+                    "duplicates": res["duplicates"]})
+
+
+@app.route("/api/cards/<int:cid>/reverse", methods=["POST"])
+def api_card_reverse(cid):
+    """H5 双方向: create the front/back mirror of a card. No AI call — the swap is
+    mechanical, and the swapped text hashes differently, so the mirror is its own
+    card with its own SRS state. The original is left untouched."""
+    if not db.query_one("SELECT id FROM cards WHERE id=?", (cid,)):
+        abort(404)
+    try:
+        new = generate.reverse_card(cid)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)[:200]}), 200
+    if not new:
+        abort(404)
+    return jsonify({"ok": True, "card": card_dict(new)})
+
+
+@app.route("/api/cards/<int:cid>/distractors")
+def api_card_distractors(cid):
+    """G3 recognition mode: wrong options drawn from other cards in the course."""
+    if not db.query_one("SELECT id FROM cards WHERE id=?", (cid,)):
+        abort(404)
+    try:
+        limit = min(6, max(1, int(request.args.get("limit", 3))))
+    except (TypeError, ValueError):
+        limit = 3
+    return jsonify({"distractors": srs.distractors_for(cid, limit)})
 
 
 @app.route("/api/review/answer", methods=["POST"])
@@ -749,8 +835,12 @@ def api_review_materials():
 @app.route("/api/review/by-material")
 def api_review_by_material():
     """Phase J: a review queue from one or more materials (merge). Repeat
-    material_id= for several; material_id=none selects material-less cards."""
-    return jsonify(srs.by_materials(request.args.getlist("material_id")))
+    material_id= for several; material_id=none selects material-less cards.
+    G3: ?strategy=interleave round-robins the merged materials."""
+    cards = srs.by_materials(request.args.getlist("material_id"))
+    if "interleave" in srs.clean_strategies(request.args.getlist("strategy")):
+        cards = srs.interleave(cards)
+    return jsonify(cards)
 
 
 @app.route("/api/review/cram")
