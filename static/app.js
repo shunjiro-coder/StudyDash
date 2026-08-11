@@ -522,7 +522,17 @@ function choiceBox(card, r, choices) {
 function recognitionBox(card, r) {
   const box = el("div", "rc-choices");
   const real = (card.back || "").trim();
-  if (r.opts && r.optsFor === card.id) {
+  // "have we TRIED for this card" is r.optsFor alone — r.opts stays part of the
+  // guard only for rendering. Using a null r.opts as the empty-result sentinel
+  // made the guard false, so every renderReview() refetched and re-rendered in an
+  // unbounded loop for any card whose course yields no distractors (a singleton
+  // course, a NULL-course manual card, or all-duplicate backs).
+  if (r.optsFor === card.id && !r.optsLoading) {
+    if (!r.opts || !r.opts.length) {
+      // no plausible wrong options exist — degrade to the plain reveal flow
+      box.appendChild(el("div", "review-hint", "タップして答えを見る"));
+      return box;
+    }
     const pick = (val, btn) => {
       box.querySelectorAll(".rc-choice").forEach((b) => b.classList.remove("picked"));
       btn.classList.add("picked");
@@ -538,16 +548,18 @@ function recognitionBox(card, r) {
     return box;
   }
   box.appendChild(el("div", "review-hint", "選択肢を準備中…"));
+  if (r.optsLoading === card.id) return box;     // fetch already in flight
+  r.optsLoading = card.id;
   api(`/api/cards/${card.id}/distractors?limit=3`).then((d) => {
     const ds = (d && d.distractors) || [];
-    if (!ds.length) { r.opts = null; r.optsFor = card.id; renderReview(); return; }
-    const opts = ds.concat([real]);
+    const opts = ds.length ? ds.concat([real]) : [];
     // deterministic rotation by card id — stable across re-renders
-    const k = (card.id || 0) % opts.length;
+    const k = opts.length ? (card.id || 0) % opts.length : 0;
     r.opts = opts.slice(k).concat(opts.slice(0, k));
     r.optsFor = card.id;
+    r.optsLoading = null;
     renderReview();
-  }).catch(() => { r.opts = null; r.optsFor = card.id; });
+  }).catch(() => { r.opts = []; r.optsFor = card.id; r.optsLoading = null; renderReview(); });
   return box;
 }
 
@@ -881,7 +893,7 @@ async function grade(g) {
   // every per-card scratch field must clear, or the next card inherits this
   // card's typed answer / chosen option / generated choices (G3)
   r.idx++; r.revealed = false; r.draft = "";
-  r.pick = null; r.opts = null; r.optsFor = null; r.elab = "";
+  r.pick = null; r.opts = null; r.optsFor = null; r.optsLoading = null; r.elab = "";
   await refreshMeta();
   renderReview();
 }
@@ -909,7 +921,11 @@ function prefetchTranslations() {
   let started = 0;
   for (let i = r.idx + 1; i < r.queue.length && started < TRANSLATE_AHEAD; i++) {
     const c = r.queue[i];
-    if (!c || c._translating) continue;
+    if (!c) continue;
+    // an in-flight translation COUNTS toward the budget: skipping it meant every
+    // quick grade() started 3 more calls past the still-running ones, stacking
+    // concurrent claude processes linearly with grading speed
+    if (c._translating) { started++; continue; }
     const t = detectLang(c.front) === "ja" ? "en" : "ja";
     if (c._transErr === t) continue;
     if (r.transOff && r.transOff.has(c.id)) continue;
@@ -948,7 +964,7 @@ async function ensureTranslation(card, target, opts) {
   card._translating = true;
   try {
     const res = await api(`/api/cards/${card.id}/translate`, { method: "POST", body: JSON.stringify({ lang: target }) });
-    if (!res.ok) { card._transErr = target; toast(res.message || "翻訳に失敗しました"); return; }
+    if (!res.ok) { card._transErr = target; if (!opts.silent) toast(res.message || "翻訳に失敗しました"); return; }
     delete card._transErr;
     card.translation = card.translation || {};
     card.translation[target] = { front: res.translation.front, back: res.translation.back };
