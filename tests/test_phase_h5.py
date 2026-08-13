@@ -161,3 +161,13 @@ def test_steps_and_items_drop_junk_too(junk):
     steps = json.loads(generate._clean_media_json("steps", {"steps": [junk, "手順1"]}, ""))
     items = json.loads(generate._clean_media_json("list", {"items": [junk, "項目1"]}, ""))
     assert steps["steps"] == ["手順1"] and items["items"] == ["項目1"]
+
+
+def test_courseless_reverse_does_not_duplicate():
+    """NULL course_id voids the UNIQUE(course_id, content_hash) dedup, so a second
+    click used to silently insert a duplicate mirror."""
+    cid = seed.make_card(None, "用語", "定義", card_type="term")
+    generate.reverse_card(cid)
+    with pytest.raises(ValueError):
+        generate.reverse_card(cid)
+    assert db.query_one("SELECT COUNT(*) n FROM cards")["n"] == 2

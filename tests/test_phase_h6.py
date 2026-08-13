@@ -148,3 +148,39 @@ def test_occlusion_cards_enter_the_queue_as_new(client):
     client.post(f"/api/materials/{mid}/occlusion", json={"rects": [R1]})
     row = db.query_one("SELECT state, card_type FROM cards WHERE card_type='occlusion'")
     assert row["state"] == "new"
+
+
+def test_non_string_prompt_does_not_500(client):
+    mid = _image_material()
+    for bad in (5, {"x": 1}, None):
+        res = client.post(f"/api/materials/{mid}/occlusion",
+                          json={"rects": [dict(R1, label=f"L{bad}")], "prompt": bad})
+        assert res.status_code == 200 and res.get_json()["ok"] is True
+
+
+def test_courseless_occlusion_does_not_duplicate():
+    """SQLite treats NULLs as distinct in UNIQUE indexes, so INSERT OR IGNORE
+    alone re-inserted the same course-less card on every click."""
+    mid = seed.make_material(None, kind="photo", original_path="uploads/b.jpg")
+    first = generate.create_occlusion_cards(mid, [R1])
+    second = generate.create_occlusion_cards(mid, [R1])
+    assert len(first["created"]) == 1
+    assert len(second["created"]) == 0 and second["duplicates"] == 1
+    assert db.query_one("SELECT COUNT(*) n FROM cards")["n"] == 1
+
+
+def test_default_delete_keeps_the_image_occlusion_cards_render_from(client, tmp_path, monkeypatch):
+    import app as app_module
+    img = tmp_path / "brain.jpg"
+    img.write_bytes(b"jpg")
+    monkeypatch.setattr(app_module, "BASE_DIR", str(tmp_path))
+    co = seed.make_course()
+    mid = seed.make_material(co, kind="photo", original_path="brain.jpg")
+    generate.create_occlusion_cards(mid, [R1])
+    client.delete(f"/api/materials/{mid}")            # keep-cards default
+    assert img.exists()                               # file survives with its cards
+    # ...but a delete that takes the cards too takes the file
+    mid2 = seed.make_material(co, kind="photo", original_path="brain.jpg")
+    generate.create_occlusion_cards(mid2, [dict(R1, label="別ラベル")])
+    client.delete(f"/api/materials/{mid2}?cards=1")
+    assert not img.exists()

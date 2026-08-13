@@ -401,6 +401,16 @@ def recast_card(card_id, method):
 OCCLUSION_FRONT = "図の隠れている部分は？"
 
 
+def _card_exists(course_id, content_hash):
+    """Duplicate check that also works for course-less cards. The schema's
+    UNIQUE(course_id, content_hash) can't do it alone: SQLite treats every NULL as
+    distinct in a unique index, so INSERT OR IGNORE happily inserts the same
+    course-less card again on every click."""
+    return db.query_one(
+        "SELECT id FROM cards WHERE course_id IS ? AND content_hash=?",
+        (course_id, content_hash)) is not None
+
+
 def create_occlusion_cards(material_id, rects, prompt=None):
     """H6 画像オクルージョン: one card per masked region of a material's image.
     Rectangle drawing only — no AI call.
@@ -432,13 +442,16 @@ def create_occlusion_cards(material_id, rects, prompt=None):
     labels = [r["label"] for r in cleaned["rects"]]
     if not all(labels):
         raise ValueError("それぞれの範囲に答え（ラベル）を入れてください")
-    front = (prompt or "").strip() or OCCLUSION_FRONT
+    front = db.text_cell(prompt) or OCCLUSION_FRONT   # a number/null prompt must not 500
     now = db.now_utc_iso()
     made, dup = [], 0
     for i, r in enumerate(cleaned["rects"]):
         back = r["label"]
         mj = json.dumps({"occlusion": dict(cleaned, target=i)}, ensure_ascii=False)
         ch = db.content_hash(front, back)
+        if _card_exists(m["course_id"], ch):
+            dup += 1
+            continue
         cur = db.write_returning(
             """INSERT OR IGNORE INTO cards
                (course_id, material_id, card_type, front, back, origin,
@@ -485,6 +498,8 @@ def reverse_card(card_id):
     if db.norm_text(front) == db.norm_text(back):
         raise ValueError("表と裏が同じ内容なので逆向きにできません")
     ch = db.content_hash(front, back)
+    if _card_exists(card["course_id"], ch):
+        raise ValueError("逆向きのカードはすでにあります")
     cur = db.write_returning(
         """INSERT OR IGNORE INTO cards
            (course_id, material_id, card_type, front, back, topic, origin,

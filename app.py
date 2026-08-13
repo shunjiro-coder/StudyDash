@@ -715,7 +715,14 @@ def api_material_delete(mid):
         deleted_cards = db.query_one(
             "SELECT COUNT(*) n FROM cards WHERE material_id=?", (mid,))["n"]
         db.write("DELETE FROM cards WHERE material_id=?", (mid,))
-    if m["original_path"]:
+    # Occlusion cards render FROM the image file — if any survive this delete
+    # (the keep-cards default detaches them), removing the file would leave them
+    # permanently showing 画像を読み込めません. The file only goes when its last
+    # dependent card does.
+    keep_file = (not drop_cards) and db.query_one(
+        "SELECT COUNT(*) n FROM cards WHERE material_id=? AND card_type='occlusion'",
+        (mid,))["n"] > 0
+    if m["original_path"] and not keep_file:
         try:
             os.remove(os.path.join(BASE_DIR, m["original_path"]))
         except OSError:

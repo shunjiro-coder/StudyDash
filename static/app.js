@@ -974,10 +974,13 @@ async function ensureTranslation(card, target, opts) {
   } catch (e) { card._transErr = target; if (!opts.silent) toast("翻訳に失敗: " + e.message); }
   finally {
     card._translating = false;
-    // a background warm-up of a later card must not re-render the one on screen
+    // Re-render ONLY if the card this translation belongs to is the one on
+    // screen. A resolution for a card the user already graded past has nothing
+    // to show — re-rendering anyway rebuilt the CURRENT card's DOM, dropping
+    // textarea focus (and any IME composition) mid-answer.
     const r2 = S.review;
     const onScreen = r2 && r2.queue && r2.queue[r2.idx] && r2.queue[r2.idx].id === card.id;
-    if (S.tab === "review" && (onScreen || !opts.prefetch)) renderReview();
+    if (S.tab === "review" && onScreen) renderReview();
   }
 }
 
