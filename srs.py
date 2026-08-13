@@ -309,7 +309,9 @@ def review_materials():
     return out
 
 
-def by_materials(tokens, limit=80):
+def by_materials(tokens, limit=400):
+    # limit raised 80 -> 400 at the user's request: their TOEFL deck is 344 cards
+    # and a by-material session should be able to cover the whole material.
     """A review queue drawn from one or more materials (merge). `tokens` are
     material-id strings; the literal 'none' selects material-less cards. Study-ALL
     (every non-suspended/proposed card of those materials), due-first then new."""
