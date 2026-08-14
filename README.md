@@ -125,10 +125,25 @@ To back up, copy this folder. To uninstall, delete it.
 | 「Python が見つかりません」 | python.org から入れ直す（Windows は PATH のチェックを忘れずに） |
 | HEIC がアップロードできない | Mac 以外では未対応。JPG で保存し直す / not supported off macOS — re-save as JPG |
 | AI が動かない | `claude login` を実行 / run `claude login` |
-| 何かがおかしい | `python3 doctor.py` を実行して結果を送る / run it and send me the output |
+| 何かがおかしい | 左下の **？** からレポートを作って送る / hit **?** and send the report |
 
-不具合を伝えるときは、画面左下の **バージョン番号（v1.0.0 など）** も一緒に教えてください。
-When reporting a problem, include the **version number** shown at the bottom-left.
+### 不具合・要望を送る / Reporting a problem
+
+画面左下の **？** を押し、何が起きたかを書いて「レポートを作る」。
+`feedback/report-….md` が保存されるので、**そのファイルを開発者に送ってください。**
+開発者はそれをそのまま Claude Code に渡して原因を調べられます。
+
+Hit **?** at the bottom-left, describe what happened, and a report is saved into
+`feedback/`. Send that file back — it is written so it can be handed to Claude Code
+as-is for diagnosis.
+
+**自動送信は一切ありません。** レポートに入るのはバージョン・OS・件数までで、
+**カードやノートの中身は入りません。** 教材のエラーやログを含めるかは自分で選べます
+（含めても、ユーザー名やファイル名は伏せ字になります）。
+
+*Nothing is sent automatically — this app has no server to send to. Reports carry
+version, OS and counts, never your card or note content. Including the last error
+or the log tail is opt-in, and home directories and file names are scrubbed.*
 
 ---
 

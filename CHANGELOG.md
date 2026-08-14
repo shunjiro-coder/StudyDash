@@ -5,6 +5,23 @@ Newest first — read this after an update to see what changed.
 
 ---
 
+## v1.1.0 — 2026-08-14
+
+### 追加 / Added
+- **困ったとき・要望を伝える** — 画面左下の **？** ボタンから、うまく動かないこと・
+  分かりにくいこと・こうしてほしいことを報告できます。押すと `feedback/` に
+  レポート（.md）が保存されるので、それを開発者に送ってください。
+  *A **?** button in the footer writes a problem report to `feedback/` — send that
+  file back to the maintainer, who can hand it straight to Claude Code to diagnose.*
+- **何も送信されません。** レポートは自動送信されず、必ず自分で送る形です。
+  含まれるのはバージョン・OS・件数まで。**カードやノートの中身は入りません。**
+  教材名やログを含めるかどうかは、チェックボックスで自分で選べます。
+  *Nothing is transmitted anywhere. Reports carry version, OS and counts — never
+  card or note content. Including the last error or the log tail is opt-in, and
+  home directories and file names are scrubbed from both.*
+
+---
+
 ## v1.0.0 — 2026-08-14
 
 **初回配布版。 / First distributable release.**
