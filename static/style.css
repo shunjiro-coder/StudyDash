@@ -1123,3 +1123,20 @@ textarea.rc-input { min-height: 84px; resize: vertical; line-height: 1.6; }
 }
 .mat-del-confirm .meta-line { white-space: pre-wrap; line-height: 1.7; }
 .mat-del-opt { display: flex; align-items: center; gap: 8px; margin: 10px 0; cursor: pointer; }
+
+/* ---- L: pacing + target date + auto-start ------------------------------ */
+.rc-back { margin-left: auto; }
+.rmm-pace { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.rmm-pace-t { font-size: .76rem; color: var(--muted); }
+.rmm-cal { flex: 0 0 auto; }
+.rmm-cal-edit { display: inline-flex; align-items: center; gap: 6px; }
+.rmm-cal-edit.hidden { display: none; }
+.rmm-date {
+  font: inherit; font-size: .82rem; padding: 4px 6px; color: var(--text);
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  color-scheme: light dark;   /* native picker follows the theme */
+}
+.auto-start-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  font-size: .8rem; color: var(--muted); cursor: pointer;
+}

@@ -613,6 +613,14 @@ def _migrate_k_glossary(conn):
     _ensure_column(conn, "materials", "glossary_json", "TEXT")
 
 
+def _migrate_l_target_date(conn):
+    # Phase L: a per-material study deadline (calendar date, YYYY-MM-DD, local).
+    # The daily queue paces new-card intake from it: unseen cards / days left.
+    # Date-only on purpose — it is a goal ("know this by the exam"), not a
+    # timestamped event, so the D-4 *_at convention does not apply.
+    _ensure_column(conn, "materials", "target_date", "TEXT")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
@@ -623,6 +631,7 @@ MIGRATIONS = [
     ("i_folders", "I", _migrate_i_folders),
     ("j_card_translation", "J", _migrate_j_translation),
     ("k_material_glossary", "K", _migrate_k_glossary),
+    ("l_target_date", "L", _migrate_l_target_date),
 ]
 
 

@@ -563,6 +563,66 @@ function recognitionBox(card, r) {
   return box;
 }
 
+// L: 期限 (target date) + pacing per material. The maths the user asked to see:
+// how many cards a day it takes to finish by the chosen date — and with no date,
+// how long the current pace takes.
+function paceText(mm) {
+  const n = mm.new_count || 0;
+  if (!n) return "未学習カードはありません";
+  if (mm.target_date && mm.days_left != null) {
+    return `期限 ${mm.target_date} まであと${mm.days_left}日 → 1日${mm.per_day}枚で全部見られます`;
+  }
+  const cap = (S.meta && S.meta.review_new_cap) || 10;
+  const days = Math.ceil(n / cap);
+  return `未学習${n}枚 ・ いまのペース（1日${cap}枚）だと全部見るまで約${days}日`;
+}
+function paceRow(mm) {
+  const wrap = el("div", "rmm-pace");
+  wrap.appendChild(el("span", "rmm-pace-t", paceText(mm)));
+  const btn = el("button", "btn small ghost rmm-cal", mm.target_date ? "📅 " + mm.target_date : "📅 期限を設定");
+  btn.type = "button";
+  btn.title = "この教材をいつまでに覚えるか決めると、1日の新規カード数が自動で調整されます";
+  const editor = el("span", "rmm-cal-edit hidden");
+  const inp = el("input", "rmm-date"); inp.type = "date";
+  inp.value = mm.target_date || "";
+  const save = async (val) => {
+    try {
+      const res = await api(`/api/materials/${mm.material_id}/target`,
+        { method: "POST", body: JSON.stringify({ date: val || null }) });
+      if (!res.ok) { toast(res.message || "設定に失敗しました"); return; }
+      toast(val ? `期限を ${val} にしました` : "期限を外しました", true);
+      renderReview();
+    } catch (e) { toast("設定に失敗: " + e.message); }
+  };
+  inp.onchange = () => save(inp.value);
+  inp.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+  const clear = el("button", "btn small ghost", "外す"); clear.type = "button";
+  clear.onclick = (e) => { e.preventDefault(); e.stopPropagation(); save(""); };
+  editor.appendChild(inp); editor.appendChild(clear);
+  btn.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    editor.classList.toggle("hidden");
+    if (!editor.classList.contains("hidden")) inp.focus();
+  };
+  wrap.appendChild(btn); wrap.appendChild(editor);
+  return wrap;
+}
+
+// L: auto-start — begin the session on opening 復習 once today's queue is at its
+// limit. Browser-truth: this can only fire while the app is OPEN; a closed tab
+// cannot wake itself.
+function wantsAutoStart() {
+  try { return localStorage.getItem("review_autostart") === "1"; } catch (e) { return false; }
+}
+function autoStartRow() {
+  const lab = el("label", "auto-start-row");
+  const cb = el("input"); cb.type = "checkbox"; cb.checked = wantsAutoStart();
+  cb.onchange = () => { try { localStorage.setItem("review_autostart", cb.checked ? "1" : "0"); } catch (e) {} };
+  lab.appendChild(cb);
+  lab.appendChild(el("span", "", "上限に達した日は、復習タブを開いたら自動で始める"));
+  return lab;
+}
+
 function strategyPicker() {
   const wrap = el("div", "strat-wrap");
   const head = el("div", "strat-head");
@@ -617,8 +677,24 @@ async function renderReviewHome(p) {
     c.appendChild(mrow);
   }
   if (due > 0) { const b = el("button", "btn primary", "始める"); b.style.marginTop = "12px"; b.onclick = () => loadReviewQueue("normal"); c.appendChild(b); }
+  c.appendChild(autoStartRow());
   c.appendChild(strategyPicker());
   p.appendChild(c);
+
+  // L: auto-start — today's queue is at its cap and the user opted in. Guarded by
+  // a per-day flag so「戻る」or finishing doesn't bounce straight back in.
+  if (due > 0 && wantsAutoStart() && !S.review.mode) {
+    try {
+      const q = await api("/api/review/queue");
+      const atLimit = (q.new_count >= (q.new_cap || 10)) || (q.due_count >= (q.due_cap || 20));
+      const today = new Date().toISOString().slice(0, 10);
+      if (atLimit && localStorage.getItem("review_autostarted") !== today) {
+        localStorage.setItem("review_autostarted", today);
+        loadReviewQueue("normal");
+        return;
+      }
+    } catch (e) {}
+  }
 
   // J — study by (study) material: pick one material's cards, or check several and
   // merge them into one session. Shown first so "review by material" is front-and-
@@ -646,6 +722,7 @@ async function renderReviewHome(p) {
       if (mm.new_count) meta.push("新規 " + mm.new_count);
       meta.push("計 " + mm.total);
       body.appendChild(el("div", "rmm-meta", meta.join(" ・ ")));
+      if (mm.material_id != null) body.appendChild(paceRow(mm));
       row.appendChild(body);
       const go = el("button", "btn small ghost", "この教材"); go.type = "button";
       go.onclick = (e) => { e.preventDefault(); e.stopPropagation(); loadReviewQueue("material", { material_ids: [token], label: mm.label }); };
@@ -746,6 +823,16 @@ function renderCard(p) {
   top.appendChild(el("span", "pill", card.why_now));
   if (card.course_name) top.appendChild(el("span", "pill " + (card.subject_type || "other"), card.course_name));
   top.appendChild(el("span", "review-progress", `${r.idx + 1} / ${r.queue.length}${r.label ? " ・ " + r.label : ""}`));
+  // L: leave the session and go back to the group picker without finishing it.
+  // Progress is safe — every graded card was already saved by grade().
+  const back = el("button", "btn small ghost rc-back", "← 教材選択");
+  back.title = "セッションを中断して教材選択に戻ります（採点済みの分は保存されています）";
+  back.onclick = (e) => {
+    e.stopPropagation();
+    S.review = { queue: [], idx: 0, revealed: false, mode: "", label: "" };
+    renderReview();
+  };
+  top.appendChild(back);
   // language flip: per-card 🌐 (toggles this card) + a session 全部翻訳 toggle.
   const langWrap = el("div", "rc-langs");
   const flip = el("button", "btn small ghost lang-flip",

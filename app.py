@@ -10,6 +10,7 @@ threaded with the reloader OFF (reloader would double-spawn schedulers/threads).
 import json
 import os
 import secrets
+from datetime import datetime
 
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from werkzeug.exceptions import HTTPException
@@ -332,6 +333,7 @@ def api_meta():
         "cost": {"per_call": settings.get("cost_per_call_usd", 0.05),
                  "monthly_budget": settings.get("monthly_call_budget", 200)},
         "content_lang": db.content_lang(),   # output language for generated study content
+        "review_new_cap": int(settings.get("review_new_cap", 10)),   # L: pacing display
         "backup": backup.status(),   # passive health: {latest, age_days}
     })
 
@@ -760,6 +762,27 @@ def api_review_queue():
         q["cards"] = srs.interleave(q["cards"])
     q["strategies"] = strategies
     return jsonify(q)
+
+
+@app.route("/api/materials/<int:mid>/target", methods=["POST"])
+def api_material_target(mid):
+    """L: set / clear a material's study deadline (calendar date). The daily
+    review queue then paces this material's unseen cards to finish by it."""
+    if not db.query_one("SELECT id FROM materials WHERE id=?", (mid,)):
+        abort(404)
+    raw = (request.get_json(silent=True) or {}).get("date")
+    date = db.text_cell(raw)
+    if date:
+        try:
+            y, m, d = [int(x) for x in date.split("-")]
+            date = "%04d-%02d-%02d" % (y, m, d)
+            datetime(y, m, d)                      # reject 2026-13-99
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "message": "日付は YYYY-MM-DD で指定してください"}), 200
+    db.write("UPDATE materials SET target_date=? WHERE id=?", (date or None, mid))
+    pacing = [p for p in srs.paced_materials() if p["material_id"] == mid]
+    return jsonify({"ok": True, "target_date": date or None,
+                    "pacing": pacing[0] if pacing else None})
 
 
 @app.route("/api/materials/<int:mid>/occlusion", methods=["POST"])

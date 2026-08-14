@@ -18,7 +18,7 @@ grand total, and day-spread overdue cards (redistribute) instead of dumping them
 """
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import db
 
@@ -123,6 +123,40 @@ def _card_out(r, exam_courses):
     }
 
 
+def days_left(target_date):
+    """Days remaining until a material's study deadline, INCLUSIVE of today
+    (a target of today means "finish today", not divide-by-zero). A past or
+    unparseable date clamps to 1 — cramming, not crashing. Local calendar days:
+    the user picked a date off their own calendar."""
+    try:
+        y, m, d = [int(x) for x in str(target_date)[:10].split("-")]
+        target = datetime(y, m, d).date()
+    except (ValueError, TypeError, AttributeError):
+        return 1
+    today = db.now_dt().astimezone().date()
+    return max(1, (target - today).days + 1)
+
+
+def paced_materials():
+    """Materials with a study deadline and unseen cards -> what today demands.
+    per_day = ceil(unseen / days_left): the whole point of Phase L — the daily
+    new-card intake follows the calendar instead of a fixed cap."""
+    rows = db.query(
+        "SELECT m.id AS id, m.target_date AS target_date, "
+        "SUM(CASE WHEN c.state='new' THEN 1 ELSE 0 END) AS new_n "
+        "FROM materials m JOIN cards c ON c.material_id = m.id "
+        "WHERE m.target_date IS NOT NULL AND m.target_date != '' "
+        "AND c.state NOT IN ('suspended','proposed') "
+        "GROUP BY m.id HAVING new_n > 0")
+    out = []
+    for r in rows:
+        left = days_left(r["target_date"])
+        out.append({"material_id": r["id"], "target_date": r["target_date"],
+                    "new_count": r["new_n"], "days_left": left,
+                    "per_day": -(-r["new_n"] // left)})   # ceil
+    return out
+
+
 def get_queue():
     """Due + new cards, capped. Grand total is intentionally NOT returned."""
     s = db.load_settings()
@@ -134,11 +168,29 @@ def get_queue():
         CARD_JOIN + " WHERE c.state='review' AND c.next_due_at IS NOT NULL "
         "AND c.next_due_at <= ? ORDER BY c.next_due_at ASC LIMIT ?",
         (now_iso, due_cap))
-    new = db.query(
-        CARD_JOIN + " WHERE c.state='new' ORDER BY c.id ASC LIMIT ?", (new_cap,))
+    # L: materials with a deadline set their own daily intake (unseen/days-left);
+    # everything else shares the fixed review_new_cap as before.
+    paced = paced_materials()
+    new = []
+    for p in paced:
+        new += db.query(
+            CARD_JOIN + " WHERE c.state='new' AND c.material_id=? "
+            "ORDER BY c.id ASC LIMIT ?", (p["material_id"], p["per_day"]))
+    paced_ids = [p["material_id"] for p in paced]
+    not_paced = ""
+    params = [new_cap]
+    if paced_ids:
+        not_paced = ("AND (c.material_id IS NULL OR c.material_id NOT IN (%s)) "
+                     % ",".join("?" * len(paced_ids)))
+        params = paced_ids + [new_cap]
+    new += db.query(
+        CARD_JOIN + " WHERE c.state='new' " + not_paced +
+        "ORDER BY c.id ASC LIMIT ?", params)
     cards = [_card_out(r, exam_courses) for r in due] + \
             [_card_out(r, exam_courses) for r in new]
-    return {"cards": cards, "new_count": len(new), "due_count": len(due)}
+    return {"cards": cards, "new_count": len(new), "due_count": len(due),
+            "new_cap": new_cap, "due_cap": due_cap,
+            "paced": paced}   # additive keys only — contract preserved
 
 
 def counts():
@@ -275,6 +327,7 @@ def review_materials():
     # no summary column) — mirror ingest.material_dict and parse it in Python.
     rows = db.query(
         "SELECT c.material_id AS material_id, m.extracted_json AS extracted_json, "
+        "m.target_date AS target_date, "
         "m.kind AS kind, m.original_path AS thumb_path, co.name AS course_name, "
         "co.subject_type AS subject_type, COUNT(*) AS total, "
         "SUM(CASE WHEN c.state='new' THEN 1 ELSE 0 END) AS new_n, "
@@ -305,6 +358,11 @@ def review_materials():
             "kind": r["kind"],
             "thumb_url": ("/" + r["thumb_path"]) if r["thumb_path"] else None,
             "total": r["total"], "new_count": r["new_n"] or 0, "due_count": r["due_n"] or 0,
+            # L: deadline + today's pace, so the picker can show 「あとD日 → 1日M枚」
+            "target_date": r["target_date"],
+            "days_left": days_left(r["target_date"]) if r["target_date"] else None,
+            "per_day": (-(-(r["new_n"] or 0) // days_left(r["target_date"]))
+                        if r["target_date"] and (r["new_n"] or 0) else None),
         })
     return out
 
