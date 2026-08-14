@@ -22,6 +22,7 @@ import generate  # noqa: F401 — registers the 'generate' worker handler at imp
 import ingest  # noqa: F401 — registers the 'ingest' worker handler at import
 import notes
 import srs
+import support
 import version
 import worker
 
@@ -338,6 +339,33 @@ def api_meta():
         "version": version.__version__,   # M: shown in the footer, asked for in support
         "backup": backup.status(),   # passive health: {latest, age_days}
     })
+
+
+@app.route("/api/feedback", methods=["GET", "POST"])
+def api_feedback():
+    """Phase N: problem reports. POST builds a shareable markdown report and saves
+    it under feedback/; GET lists what this copy has already reported. Nothing is
+    transmitted anywhere — the person sends the file to the maintainer themselves."""
+    if request.method == "GET":
+        rows = db.query(
+            "SELECT id, kind, message, file_path, created_at FROM feedback_reports "
+            "ORDER BY id DESC LIMIT 50")
+        return jsonify({"reports": [dict(r) for r in rows],
+                        "kinds": support.KINDS})
+    data = request.get_json(silent=True) or {}
+    message = db.text_cell(data.get("message")).strip()
+    if not message:
+        return jsonify({"ok": False,
+                        "error": "何が起きたかを書いてください。"}), 200
+    try:
+        saved = support.save_report(
+            db.text_cell(data.get("kind")) or "other",
+            message,
+            include_error=bool(data.get("include_error")),
+            include_log=bool(data.get("include_log")))
+    except Exception as e:  # noqa: BLE001 — reporting a problem must never itself 500
+        return jsonify({"ok": False, "error": "レポートを保存できませんでした: %s" % e}), 200
+    return jsonify({"ok": True, **saved})
 
 
 @app.route("/api/settings", methods=["GET", "PATCH"])

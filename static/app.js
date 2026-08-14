@@ -2618,6 +2618,124 @@ function syncSetupSteps() {
   d.appendChild(el("div", "sync-note", "Classroom は任意です。接続しなくても、課題の手入力と写真取り込みで通常どおり使えます。"));
   return d;
 }
+// ---- Phase N: 困ったとき / problem reports -------------------------------
+// There is no server to send to, so a report becomes a markdown FILE the person
+// hands back to the maintainer (who can paste it straight into Claude Code).
+// The two options that could carry a fragment of their own material are opt-in.
+const SUPPORT_KINDS = [
+  ["bug", "うまく動かない"],
+  ["confusing", "使い方が分かりにくい"],
+  ["idea", "こうしてほしい"],
+  ["other", "その他"],
+];
+
+function openSupportModal() {
+  const ov = el("div", "modal-overlay");
+  const box = el("div", "modal support-modal");
+  const close = el("button", "modal-close", "✕"); close.onclick = () => ov.remove();
+  box.appendChild(close);
+  box.appendChild(el("h3", "", "困ったとき・要望を伝える"));
+  box.appendChild(el("div", "sup-lead",
+    "書いた内容はレポート（.md ファイル）になります。開発者に送ってください。" +
+    "このアプリは外部に何も送信しません。"));
+
+  // kind
+  const kindRow = el("div", "sup-kinds");
+  let kind = "bug";
+  SUPPORT_KINDS.forEach(([k, label]) => {
+    const b = el("button", "sm-chip" + (k === kind ? " on" : ""), label);
+    b.type = "button";
+    b.onclick = () => {
+      kind = k;
+      Array.from(kindRow.children).forEach((c) => c.classList.remove("on"));
+      b.classList.add("on");
+    };
+    kindRow.appendChild(b);
+  });
+  box.appendChild(el("label", "sup-label", "種類"));
+  box.appendChild(kindRow);
+
+  // what happened
+  box.appendChild(el("label", "sup-label", "何が起きましたか？"));
+  const ta = el("textarea", "sup-text");
+  ta.rows = 5;
+  ta.placeholder = "例: PDF をアップロードしたら「解析に失敗」と出て、カードが作られませんでした。";
+  box.appendChild(ta);
+
+  // opt-ins — named plainly so consent is informed
+  const opts = el("div", "sup-opts");
+  const mkOpt = (labelText, hint, checked) => {
+    const wrap = el("label", "sup-opt");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = !!checked;
+    wrap.appendChild(cb);
+    const t = el("span", "");
+    t.appendChild(el("b", "", labelText));
+    t.appendChild(el("span", "sup-hint", hint));
+    wrap.appendChild(t);
+    opts.appendChild(wrap);
+    return cb;
+  };
+  const cbErr = mkOpt("直近のエラーを含める",
+    "教材名やパスが含まれることがあります", false);
+  const cbLog = mkOpt("ログの末尾を含める",
+    "原因の特定にいちばん役立ちます。パスは伏せ字にします", false);
+  box.appendChild(el("label", "sup-label", "追加情報（任意）"));
+  box.appendChild(opts);
+  box.appendChild(el("div", "sup-note",
+    "バージョン・OS・件数はいつも含まれます。カードやノートの中身は含まれません。"));
+
+  const result = el("div", "sup-result");
+  const send = el("button", "btn primary", "レポートを作る");
+  send.onclick = async () => {
+    const message = ta.value.trim();
+    if (!message) { ta.focus(); return; }
+    const restore = btnBusy(send, "作成中…");
+    let r;
+    try {
+      r = await api("/api/feedback", {
+        method: "POST",
+        body: JSON.stringify({
+          kind, message,
+          include_error: cbErr.checked,
+          include_log: cbLog.checked,
+        }),
+      });
+    } catch (e) {
+      restore();
+      result.textContent = "作成に失敗しました: " + e.message;
+      return;
+    }
+    restore();
+    result.textContent = "";
+    if (!r.ok) { result.textContent = r.error || "作成に失敗しました"; return; }
+    result.appendChild(el("div", "sup-ok",
+      r.file_path ? `保存しました → ${r.file_path}` : "作成しました"));
+    result.appendChild(el("div", "sup-hint",
+      "このファイルを開発者に送ってください。下のボタンで本文をコピーもできます。"));
+    const copy = el("button", "btn small", "本文をコピー");
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(r.report_md);
+        copy.textContent = "コピーしました ✓";
+      } catch (e) {
+        // clipboard is blocked outside a secure context on some setups — show it
+        const pre = el("pre", "sup-md", r.report_md);
+        result.appendChild(pre);
+        copy.textContent = "手動でコピーしてください";
+      }
+    };
+    result.appendChild(copy);
+    ta.value = "";
+  };
+  box.appendChild(send);
+  box.appendChild(result);
+
+  ov.appendChild(box);
+  ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  document.body.appendChild(ov);
+  ta.focus();
+}
+
 function openSyncModal() {
   const configured = !!(S.meta && S.meta.classroom_configured);
   const ov = el("div", "modal-overlay");
@@ -2735,6 +2853,7 @@ function init() {
   loadMethods();
   $("#theme-toggle").onclick = toggleTheme; syncThemeButton();
   { const si = $("#sync-info"); if (si) si.onclick = openSyncModal; }
+  { const sb = $("#support-btn"); if (sb) sb.onclick = openSupportModal; }
   { const fi = $("#file-input"); if (fi) fi.onchange = () => { const files = [...fi.files]; fi.value = ""; if (files.length) uploadFiles(files); }; }
   { const at = $("#accent-toggle"); if (at) at.onclick = (e) => { e.stopPropagation(); toggleAccentMenu(); }; }
   $("#add-fab").onclick = openAdd;

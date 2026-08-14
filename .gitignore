@@ -28,3 +28,6 @@ settings.local.json
 
 # distributable packs (built by pack.py; rebuildable, never versioned)
 dist/
+
+# problem reports written by whoever runs this copy (may quote their own paths)
+feedback/

@@ -621,6 +621,22 @@ def _migrate_l_target_date(conn):
     _ensure_column(conn, "materials", "target_date", "TEXT")
 
 
+def _migrate_n_feedback(conn):
+    # Phase N: problem reports written by whoever is using this copy of the app.
+    # Local-only: there is no server to send them to, so a report is a file the
+    # recipient hands back to the maintainer. Stored as well so the app can list
+    # what has already been reported and avoid duplicate sends.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS feedback_reports (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             kind TEXT NOT NULL,
+             message TEXT NOT NULL,
+             report_md TEXT NOT NULL,
+             file_path TEXT,
+             created_at TEXT NOT NULL
+           )""")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
@@ -632,6 +648,7 @@ MIGRATIONS = [
     ("j_card_translation", "J", _migrate_j_translation),
     ("k_material_glossary", "K", _migrate_k_glossary),
     ("l_target_date", "L", _migrate_l_target_date),
+    ("n_feedback", "N", _migrate_n_feedback),
 ]
 
 
