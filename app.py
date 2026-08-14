@@ -22,6 +22,7 @@ import generate  # noqa: F401 — registers the 'generate' worker handler at imp
 import ingest  # noqa: F401 — registers the 'ingest' worker handler at import
 import notes
 import srs
+import version
 import worker
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -334,6 +335,7 @@ def api_meta():
                  "monthly_budget": settings.get("monthly_call_budget", 200)},
         "content_lang": db.content_lang(),   # output language for generated study content
         "review_new_cap": int(settings.get("review_new_cap", 10)),   # L: pacing display
+        "version": version.__version__,   # M: shown in the footer, asked for in support
         "backup": backup.status(),   # passive health: {latest, age_days}
     })
 
@@ -932,32 +934,57 @@ def seed_sample_data():
         return
     now = db.now_utc_iso()
     from datetime import datetime, timedelta, timezone
-    course_id = db.get_or_create_course("数学")  # -> stem
+    course_id = db.get_or_create_course("StudyDash の使い方")
     due = db.to_utc_iso(datetime.now(timezone.utc) + timedelta(days=1))
     db.write(
         """INSERT INTO assignments
            (course_id, title, description, due_at, category, max_points,
             status, estimated_minutes, source, external_id, updated_at, created_at)
            VALUES (?,?,?,?,?,?,?,?, 'manual', NULL, ?, ?)""",
-        (course_id, "演習問題 p.42（サンプル）",
-         "これはサンプル課題です。不要なら削除してください。", due,
-         "homework", 20, "todo", 60, now, now))
-    # 3 sample cards (usable once the review tab lands in Phase 4)
+        (course_id, "はじめての教材をアップロードしてみる",
+         "「教材」タブから写真か PDF を1つ入れてみてください。"
+         "AI が中身を読み取り、カード候補を提案します（確認してから追加されます）。"
+         "これはサンプルです。終わったら削除してかまいません。", due,
+         "homework", 0, "todo", 15, now, now))
+    # The demo deck IS the tutorial: reviewing it once teaches every card format the
+    # app can render, so a new user meets the features instead of reading about them.
     samples = [
-        ("qa", "二次方程式の解の公式は？",
-         "x = (-b ± √(b²-4ac)) / 2a", "二次方程式"),
-        ("qa", "三角形の内角の和は？", "180°", "図形"),
-        ("term", "微分係数の定義は？",
-         "f'(a) = lim(h→0) (f(a+h)-f(a))/h", "微分"),
+        ("qa", "StudyDash で教材からカードを作るには？",
+         "「教材」タブで写真か PDF をアップロードすると、AI が読み取ってカードを提案します。"
+         "提案は**確認してから**キューに入ります。", "使い方", None),
+        ("term", "間隔反復（かんかくはんぷく）とは？",
+         "忘れる直前に復習する方法。正解すると次に出るまでの間隔が伸び、"
+         "間違えると短くなります。", "使い方", None),
+        ("cloze", "教材に試験日を設定すると、1日の新規カード枚数は ___ から自動で決まります。",
+         "残り日数", "使い方", None),
+        ("choice", "復習中に「🌐」ボタンを押すと何が起きる？",
+         "そのカードだけ日本語と英語が入れ替わる",
+         "使い方",
+         {"choices": ["カードが削除される", "次のカードに進む",
+                      "デッキ全体の言語が変わる"]}),
+        ("steps", "写真をアップロードしてからカードが増えるまでの流れは？",
+         "アップロード → AI が全文を書き起こす → カード候補を提案 → あなたが承認 → 復習キューに追加",
+         "使い方",
+         {"steps": ["「教材」タブで写真や PDF をアップロード",
+                    "AI が全文を書き起こす（少し時間がかかります）",
+                    "AI がカード候補を提案する",
+                    "内容を確認して「承認」する",
+                    "承認したカードだけが復習キューに入る"]}),
+        ("explain", "このアプリを誰かに一言で説明すると？",
+         "教材を取り込むと AI がカードを作り、忘れる直前に出題してくれる、"
+         "自分のパソコンの中だけで動く学習アプリ。", "使い方",
+         {"rubric": "「自分のパソコンだけで動く」に触れる・"
+                    "「AI がカードを作る」に触れる・「忘れる直前に復習」に触れる"}),
     ]
-    for ctype, front, back, topic in samples:
+    for ctype, front, back, topic, media in samples:
         db.write(
             """INSERT OR IGNORE INTO cards
-               (course_id, card_type, front, back, topic, origin,
+               (course_id, card_type, front, back, topic, origin, media_json,
                 content_hash, state, repetitions, current_interval,
                 current_ease, created_at)
-               VALUES (?,?,?,?,?, 'generated', ?, 'new', 0, 0, 2.5, ?)""",
+               VALUES (?,?,?,?,?, 'generated', ?,?, 'new', 0, 0, 2.5, ?)""",
             (course_id, ctype, front, back, topic,
+             json.dumps(media, ensure_ascii=False) if media else None,
              db.content_hash(front, back), now))
 
 

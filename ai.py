@@ -31,8 +31,15 @@ class ClaudeError(Exception):
         self.cost = cost
 
 
+IS_WINDOWS = os.name == "nt"
+
+
 def resolve_claude():
-    """Absolute path to the claude binary (settings override > PATH > ~/.local)."""
+    """Absolute path to the claude binary (settings override > PATH > ~/.local).
+
+    On Windows the CLI installs as claude.cmd; shutil.which consults PATHEXT, so
+    the plain name still resolves. _spawn_cmd handles actually executing it.
+    """
     s = db.load_settings()
     override = s.get("claude_bin")
     if override:
@@ -40,7 +47,30 @@ def resolve_claude():
     found = shutil.which("claude")
     if found:
         return found
+    if IS_WINDOWS:
+        return os.path.expanduser(r"~\AppData\Local\Programs\claude\claude.cmd")
     return os.path.expanduser("~/.local/bin/claude")
+
+
+def _spawn_cmd(cmd):
+    """Argv for Popen. A .cmd/.bat shim is not a PE image, so CreateProcess cannot
+    run it directly — it has to go through the command processor."""
+    if IS_WINDOWS and cmd and cmd[0].lower().endswith((".cmd", ".bat")):
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", *cmd]
+    return cmd
+
+
+def _kill_tree(proc):
+    """Kill the timed-out claude and any grandchildren it spawned. os.killpg does
+    not exist on Windows, so an AttributeError here would escape the caller's
+    guard and crash the ingest worker instead of failing the call cleanly."""
+    try:
+        if IS_WINDOWS:
+            proc.kill()
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        pass
 
 
 def check_claude():
@@ -110,8 +140,13 @@ def run_claude(prompt, model=None, add_dirs=None, allowed_tools="Read",
     # the whole tree (claude may spawn grandchildren) on timeout.
     try:
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd=cwd or BASE_DIR, start_new_session=True,
+            _spawn_cmd(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=cwd or BASE_DIR,
+            # POSIX: own process group so the whole tree can be killed. Windows
+            # has no setsid; CREATE_NEW_PROCESS_GROUP is the nearest equivalent.
+            start_new_session=not IS_WINDOWS,
+            **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+               if IS_WINDOWS else {}),
         )
     except OSError as e:
         # spawn itself failed (ENOEXEC, EACCES, too many procs, ...). Without
@@ -120,10 +155,7 @@ def run_claude(prompt, model=None, add_dirs=None, allowed_tools="Read",
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        _kill_tree(proc)
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:

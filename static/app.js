@@ -178,6 +178,12 @@ async function refreshMeta() {
       bk.classList.remove("hidden");
     } else { bk.classList.add("hidden"); }
   }
+  // version — the first thing to ask for when someone reports a problem
+  const vr = $("#version-info");
+  if (vr && S.meta.version) {
+    vr.textContent = `v${S.meta.version}`;
+    vr.classList.remove("hidden");
+  }
 }
 
 // in-flight = still being analyzed (extract/generate not finished)

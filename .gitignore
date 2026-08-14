@@ -25,3 +25,6 @@ __pycache__/
 
 # runtime setting overrides (app-written; keeps tracked settings.json pristine)
 settings.local.json
+
+# distributable packs (built by pack.py; rebuildable, never versioned)
+dist/

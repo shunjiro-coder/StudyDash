@@ -53,6 +53,13 @@ def _safe_remove(path):
         pass
 
 
+def _has_sips():
+    """sips ships with macOS only. Keeping this a lookup (not a platform test)
+    means a machine that has it works, whatever the OS calls itself."""
+    import shutil
+    return shutil.which("sips") is not None
+
+
 def _sips(*args):
     import subprocess
     subprocess.run(["sips", *args], check=True,
@@ -64,6 +71,13 @@ def _postprocess(raw_path, ext, kind, base):
     would degrade). Returns the final absolute path."""
     path = raw_path
     if ext in HEIC_EXTS:
+        if not _has_sips():
+            # Windows/Linux have no sips and we ship zero image libraries, so say
+            # what to do instead of failing with a generic conversion error.
+            raise ValueError(
+                "HEIC はこの環境では変換できません。写真を JPG か PNG で保存し直して"
+                "アップロードしてください。 / HEIC conversion needs macOS; please "
+                "re-save the photo as JPG or PNG and upload that.")
         jpg = os.path.join(UPLOADS_DIR, base + ".jpg")
         try:
             _sips("-s", "format", "jpeg", raw_path, "--out", jpg)
@@ -72,7 +86,9 @@ def _postprocess(raw_path, ext, kind, base):
             raise
         _safe_remove(raw_path)
         path = jpg
-    if kind == "photo":
+    if kind == "photo" and _has_sips():
+        # Downscaling is an optimization (smaller upload -> faster vision call),
+        # never a requirement: without sips the original is sent as-is.
         px = int(db.load_settings().get("image_max_px", 1500))
         try:
             _sips("-Z", str(px), path)
@@ -102,6 +118,10 @@ def process_upload(storage):
     storage.save(raw_path)
     try:
         final_path = _postprocess(raw_path, ext, kind, base)
+    except ValueError:
+        # already an actionable message (e.g. "re-save as JPG") — don't bury it
+        _safe_remove(raw_path)
+        raise
     except Exception as e:  # noqa: BLE001 — e.g. HEIC->JPEG conversion failed
         _safe_remove(raw_path)  # no orphan left behind
         raise ValueError(f"画像の変換に失敗しました: {filename}") from e

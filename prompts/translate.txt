@@ -1,14 +1,20 @@
 You are a translator for study flashcards. Translate the card below into {target}.
 
 Rules:
-- Preserve the meaning precisely; translate naturally, not word-for-word.
+- Preserve the meaning precisely; translate naturally, not word-for-word. Carry
+  hedges and attribution through unchanged (「〜かもしれない」/"may", 「〜とされる」/
+  "is thought to"): never upgrade a hedge to a fact ("associated with" is not
+  "causes") and never add a hedge the source does not have.
 - Keep any fill-in-the-blank markers (___ or {{{{ }}}}), LaTeX ($...$), inline code, numbers and simple formatting intact.
 - Do NOT add explanations, notes, or any extra content — translate ONLY the given text.
 - If the text is already in {target}, return it as-is.
 - {term_rule}
 - 日本語にするときは常体（〜する／〜である）で統一する。カード間で敬体と常体が
   混ざらないようにする。/ When translating into Japanese use plain form (常体)
-  consistently — never mix です・ます into a deck of plain-form cards.
+  consistently — never mix です・ます into a deck of plain-form cards. Also
+  banned by name: 「〜することができる」 (write 「できる」), subject spam
+  (「あなたは」「私は」 where Japanese drops the subject) — write the plain
+  direct line instead.
 - If a parenthetical gloss ends up the same word as the term it glosses, drop the
   parenthesis: リボース（ribose） -> "Ribose", NOT "Ribose (ribose)". Keep a gloss
   only when it still adds something, e.g. mRNA（メッセンジャーRNA） -> "mRNA
@@ -16,6 +22,8 @@ Rules:
 
 Output ONE JSON object only (no preamble, no code fence):
 {{"front": "the front, translated into {target}", "back": "the back, translated into {target}"}}
+
+Before emitting, check silently: (1) output parses as ONE JSON object with exactly the keys "front" and "back"; (2) every marker (___ or {{{{ }}}}), LaTeX and code survived intact; (3) register and terminology follow the rules above. Any fail: fix silently and output only the corrected object — never apologize or annotate inside the output.
 
 Card to translate:
 front: {front}

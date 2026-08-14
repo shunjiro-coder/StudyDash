@@ -1,0 +1,687 @@
+<title>StudyDash — 忘れる直前に、ちょうど届く</title>
+<style>
+  /* ---------- tokens: light is the complete set; dark redefines only values ---------- */
+  :root {
+    --paper:      #F6F5F9;
+    --paper-2:    #FFFFFF;
+    --paper-3:    #EFEDF5;
+    --ink:        #16151D;
+    --ink-2:      #45424F;
+    --ink-3:      #6E6B7C;
+    --rule:       #DEDCE8;
+    --rule-2:     #EAE8F1;
+    --accent:     #4B45C4;
+    --accent-2:   #6F68E0;
+    --accent-wash: rgba(75, 69, 196, 0.07);
+    --shadow:     0 1px 2px rgba(22, 21, 29, .05), 0 8px 24px rgba(22, 21, 29, .06);
+
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+            "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", Meiryo, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", "Roboto Mono",
+            Menlo, Consolas, monospace;
+
+    --col: 68ch;
+    --pad: clamp(1.25rem, 4vw, 3rem);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #121118;
+      --paper-2:    #1A1923;
+      --paper-3:    #201F2A;
+      --ink:        #ECEBF2;
+      --ink-2:      #B7B4C4;
+      --ink-3:      #87849A;
+      --rule:       #2C2A38;
+      --rule-2:     #24222E;
+      --accent:     #8B85EE;
+      --accent-2:   #A6A1F4;
+      --accent-wash: rgba(139, 133, 238, 0.10);
+      --shadow:     0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #121118;
+    --paper-2:    #1A1923;
+    --paper-3:    #201F2A;
+    --ink:        #ECEBF2;
+    --ink-2:      #B7B4C4;
+    --ink-3:      #87849A;
+    --rule:       #2C2A38;
+    --rule-2:     #24222E;
+    --accent:     #8B85EE;
+    --accent-2:   #A6A1F4;
+    --accent-wash: rgba(139, 133, 238, 0.10);
+    --shadow:     0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.75;
+    overflow-x: hidden;
+    font-feature-settings: "palt" 1;
+  }
+  ::selection { background: var(--accent-wash); }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 1120px; margin-inline: auto; padding-inline: var(--pad); }
+
+  /* ---------- eyebrow: english in mono, the page's utility voice ---------- */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 .9rem;
+  }
+
+  h1, h2, h3 { text-wrap: balance; letter-spacing: -.02em; line-height: 1.28; margin: 0; }
+  h1 { font-size: clamp(2.1rem, 6.2vw, 3.6rem); font-weight: 800; }
+  h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; }
+  h3 { font-size: 1.06rem; font-weight: 700; letter-spacing: -.01em; }
+  p  { margin: 0; max-width: var(--col); }
+
+  /* english translation line — secondary by design, mirroring the app's own hierarchy */
+  .en { color: var(--ink-3); font-size: .93rem; line-height: 1.65; max-width: var(--col); }
+  .lead { font-size: clamp(1.02rem, 2vw, 1.16rem); color: var(--ink-2); }
+
+  /* ---------- header ---------- */
+  header {
+    border-bottom: 1px solid var(--rule);
+    background: var(--paper);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .bar { display: flex; align-items: center; gap: 1rem; padding-block: .85rem; }
+  .brand { display: flex; align-items: baseline; gap: .55rem; font-weight: 800; letter-spacing: -.02em; }
+  .brand b { font-size: 1.05rem; }
+  .tag {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 999px; padding: .15rem .5rem;
+  }
+  .bar .spacer { flex: 1; }
+  .themebtn {
+    font: inherit; font-family: var(--mono); font-size: .72rem;
+    color: var(--ink-2); background: transparent;
+    border: 1px solid var(--rule); border-radius: 999px;
+    padding: .3rem .7rem; cursor: pointer;
+  }
+  .themebtn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- section rhythm ---------- */
+  section { padding-block: clamp(3.5rem, 8vw, 6rem); border-top: 1px solid var(--rule-2); }
+  section:first-of-type { border-top: 0; }
+  .stack { display: flex; flex-direction: column; gap: 1rem; }
+  .stack-lg { display: flex; flex-direction: column; gap: 2.4rem; }
+
+  /* ---------- the interval ruler: the real SM-2 progression, log-spaced ---------- */
+  .ruler { position: relative; height: 30px; margin: .4rem 0 0; max-width: 560px; }
+  .ruler::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 6px;
+    border-top: 1px solid var(--rule);
+  }
+  .tick { position: absolute; top: 0; transform: translateX(-50%); text-align: center; }
+  .tick::before {
+    content: ""; display: block; width: 1px; height: 12px;
+    background: var(--rule); margin-inline: auto;
+  }
+  .tick span {
+    font-family: var(--mono); font-size: .64rem; color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .tick.on::before { background: var(--accent); height: 16px; }
+  .tick.on span { color: var(--accent); }
+
+  /* ---------- hero ---------- */
+  .hero { display: grid; gap: clamp(2rem, 5vw, 3.5rem); align-items: start; }
+  @media (min-width: 900px) { .hero { grid-template-columns: 1.05fr .95fr; } }
+  .hero h1 span { color: var(--accent); }
+
+  /* the pacing calculator — the product's signature arithmetic, live */
+  .calc {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: clamp(1.1rem, 2.6vw, 1.6rem);
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .calc-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    padding-bottom: .85rem; border-bottom: 1px solid var(--rule-2);
+  }
+  .calc-head strong { font-size: .95rem; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+  .field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+  .field label {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .field input {
+    font: inherit; font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: .95rem; width: 100%; min-width: 0;
+    color: var(--ink); background: var(--paper);
+    border: 1px solid var(--rule); border-radius: 8px; padding: .5rem .6rem;
+    color-scheme: light dark;
+  }
+  .field input:focus { border-color: var(--accent); }
+  .readout { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+  .readout .n {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: clamp(2.4rem, 7vw, 3.2rem); font-weight: 700;
+    line-height: 1; color: var(--accent); letter-spacing: -.04em;
+  }
+  .readout .unit { font-size: 1rem; font-weight: 700; }
+  .readout .sub { font-family: var(--mono); font-size: .74rem; color: var(--ink-3); }
+  .bar-track {
+    height: 6px; border-radius: 999px; background: var(--paper-3);
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%; background: var(--accent); border-radius: 999px;
+    width: 0; transition: width .45s cubic-bezier(.22,.61,.36,1);
+  }
+  .calc-note { font-family: var(--mono); font-size: .7rem; color: var(--ink-3); line-height: 1.6; }
+
+  /* ---------- forgetting curve ---------- */
+  .curve-wrap {
+    background: var(--paper-2); border: 1px solid var(--rule);
+    border-radius: 14px; padding: 1rem; box-shadow: var(--shadow);
+  }
+  canvas { display: block; width: 100%; height: 240px; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 1.1rem; padding-top: .7rem; margin-top: .4rem;
+    border-top: 1px solid var(--rule-2);
+    font-family: var(--mono); font-size: .68rem; color: var(--ink-3);
+  }
+  .legend i { display: inline-block; width: 16px; height: 2px; margin-right: .4rem;
+              vertical-align: middle; border-radius: 2px; }
+
+  /* ---------- steps: a real sequence, so ordinals carry information ---------- */
+  ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px;
+             background: var(--rule-2); border: 1px solid var(--rule-2); border-radius: 12px;
+             overflow: hidden; }
+  @media (min-width: 760px) { ol.steps { grid-template-columns: repeat(4, 1fr); } }
+  ol.steps li { background: var(--paper-2); padding: 1.15rem 1.1rem; display: flex;
+                flex-direction: column; gap: .45rem; }
+  ol.steps .no {
+    font-family: var(--mono); font-size: .68rem; color: var(--accent);
+    font-variant-numeric: tabular-nums; letter-spacing: .1em;
+  }
+  ol.steps p { font-size: .9rem; color: var(--ink-2); }
+  ol.steps .en { font-size: .78rem; }
+
+  /* ---------- feature grid ---------- */
+  .grid { display: grid; gap: 1px; background: var(--rule-2);
+          border: 1px solid var(--rule-2); border-radius: 12px; overflow: hidden; }
+  @media (min-width: 700px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .cell { background: var(--paper-2); padding: 1.4rem; display: flex;
+          flex-direction: column; gap: .5rem; }
+  .cell .k {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .cell p { font-size: .92rem; color: var(--ink-2); }
+  .cell .en { font-size: .8rem; }
+
+  /* ---------- stats ---------- */
+  .stats { display: grid; gap: 1px; background: var(--rule-2);
+           border: 1px solid var(--rule-2); border-radius: 12px; overflow: hidden; }
+  @media (min-width: 560px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+  .stat { background: var(--paper-2); padding: 1.2rem; display: flex;
+          flex-direction: column; gap: .25rem; }
+  .stat b {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 1.7rem; font-weight: 700; color: var(--ink); letter-spacing: -.03em;
+  }
+  .stat span { font-family: var(--mono); font-size: .66rem; letter-spacing: .1em;
+               text-transform: uppercase; color: var(--ink-3); }
+
+  /* ---------- callout ---------- */
+  .note {
+    border-left: 2px solid var(--accent); background: var(--accent-wash);
+    padding: 1rem 1.2rem; border-radius: 0 10px 10px 0;
+    display: flex; flex-direction: column; gap: .4rem;
+  }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--rule); padding-block: 2.5rem 3.5rem; }
+  .foot {
+    display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: baseline;
+    font-family: var(--mono); font-size: .72rem; color: var(--ink-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<header>
+  <div class="wrap bar">
+    <span class="brand"><b>StudyDash</b><span class="tag">invite only</span></span>
+    <span class="spacer"></span>
+    <button class="themebtn" id="theme" type="button">◐ theme</button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============ HERO: the thesis is the arithmetic ============ -->
+  <section>
+    <div class="hero">
+      <div class="stack">
+        <p class="eyebrow">Local-first spaced repetition · 日本語ファースト</p>
+        <h1>忘れる直前に、<br><span>ちょうど届く。</span></h1>
+        <p class="lead">
+          教材を撮るか PDF を入れるだけ。AI が中身を読み取ってカードを提案し、
+          あなたが承認したものだけが、忘れかけた頃に出てきます。
+          試験日を決めれば、1日に何枚やればいいかは自動で決まります。
+        </p>
+        <p class="en">
+          Photograph your material or drop in a PDF. The AI reads it and
+          <em>proposes</em> cards — only what you approve enters your queue — then
+          shows each one right before you'd forget it. Set your exam date and the
+          daily workload derives itself.
+        </p>
+
+        <div style="margin-top:.6rem">
+          <p class="eyebrow" style="margin-bottom:.2rem">SM-2 intervals · days</p>
+          <div class="ruler" aria-hidden="true">
+            <span class="tick on" style="left:0%"><span>1</span></span>
+            <span class="tick" style="left:39.4%"><span>6</span></span>
+            <span class="tick" style="left:59.4%"><span>15</span></span>
+            <span class="tick" style="left:79.9%"><span>38</span></span>
+            <span class="tick" style="left:100%"><span>94</span></span>
+          </div>
+          <p class="en" style="font-size:.8rem;margin-top:.5rem">
+            正解するたび、次に出るまでの間隔が伸びていきます。
+            <span style="opacity:.75">Each correct answer pushes the card further away.</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- live pacing calculator: the feature, demonstrated rather than described -->
+      <div class="calc">
+        <div class="calc-head">
+          <strong>締め切りペース配分</strong>
+          <span class="eyebrow" style="margin:0">deadline pacing</span>
+        </div>
+        <div class="fields">
+          <div class="field">
+            <label for="cards">未学習カード</label>
+            <input id="cards" type="number" min="1" max="99999" value="342" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="date">試験日</label>
+            <input id="date" type="date">
+          </div>
+        </div>
+        <div class="readout">
+          <span class="n" id="perday">12</span>
+          <span class="unit">枚 / 日</span>
+          <span class="sub" id="daysleft">31 days left</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="fill"></div></div>
+        <p class="calc-note" id="note">
+          期限まであと31日 → 1日12枚で全部見られます。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WHY: the forgetting curve ============ -->
+  <section>
+    <div class="stack-lg">
+      <div class="stack">
+        <p class="eyebrow">Why the timing matters</p>
+        <h2>復習は「回数」ではなく「タイミング」</h2>
+        <p class="lead">
+          一夜漬けは、覚えた端から落ちていきます。忘れかけたところで一度思い出すと、
+          記憶はぐっと持ちが良くなる。StudyDash はその一度を、教材ごとに管理します。
+        </p>
+        <p class="en">
+          Cramming decays almost as fast as you build it. Recalling something just as
+          it starts to fade is what makes it stick — StudyDash schedules exactly that
+          moment, per card.
+        </p>
+      </div>
+
+      <div class="curve-wrap">
+        <canvas id="curve" aria-label="復習ありと復習なしの記憶保持率の比較グラフ"></canvas>
+        <div class="legend">
+          <span><i style="background:var(--accent)"></i>復習あり / with review</span>
+          <span><i style="background:var(--ink-3)"></i>復習なし / no review</span>
+          <span>▲ = 出題された日 / review day</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ HOW: a genuine sequence ============ -->
+  <section>
+    <div class="stack-lg">
+      <div class="stack">
+        <p class="eyebrow">From photo to flashcard</p>
+        <h2>取り込みから復習まで、4ステップ</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <span class="no">01</span>
+          <h3>入れる</h3>
+          <p>写真・PDF をドラッグするだけ。</p>
+          <p class="en">Drop in a photo or PDF.</p>
+        </li>
+        <li>
+          <span class="no">02</span>
+          <h3>読み取る</h3>
+          <p>AI が全文を書き起こし、用語表を作ります。</p>
+          <p class="en">The AI transcribes it and builds a glossary.</p>
+        </li>
+        <li>
+          <span class="no">03</span>
+          <h3>提案する</h3>
+          <p>カード候補を出典つきで提示。まだキューには入りません。</p>
+          <p class="en">Cards are proposed with their source — not yet in your queue.</p>
+        </li>
+        <li>
+          <span class="no">04</span>
+          <h3>承認する</h3>
+          <p>あなたが選んだものだけが復習に回ります。</p>
+          <p class="en">Only what you approve gets scheduled.</p>
+        </li>
+      </ol>
+      <div class="note">
+        <strong>勝手に増えないのが要点です。</strong>
+        <p class="en" style="margin:0">
+          The approval gate is the point: AI proposes, you decide. A deck you didn't
+          agree to is a deck you won't review.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WHAT: features ============ -->
+  <section>
+    <div class="stack-lg">
+      <div class="stack">
+        <p class="eyebrow">What's inside</p>
+        <h2>フラッシュカードだけでは足りないので</h2>
+        <p class="en">
+          Front-and-back cards don't fit maths, grammar, or process questions — so
+          there are eight other formats, and four ways to run a session.
+        </p>
+      </div>
+      <div class="grid">
+        <div class="cell">
+          <span class="k">Deadline pacing</span>
+          <h3>期限から逆算する1日の枚数</h3>
+          <p>試験日を設定すると、残り日数と未学習枚数から1日の新規枚数を計算し、日が近づくほど自動で締まります。</p>
+          <p class="en">Daily intake is ceil(unseen ÷ days left), recomputed every day.</p>
+        </div>
+        <div class="cell">
+          <span class="k">Card formats</span>
+          <h3>9種類の出題形式</h3>
+          <p>一問一答・用語・穴埋め・解法ステップ・自己説明・多肢選択・画像オクルージョン・リスト・計算。</p>
+          <p class="en">Q&amp;A, term, cloze, worked steps, self-explanation, multiple choice, image occlusion, list, compute.</p>
+        </div>
+        <div class="cell">
+          <span class="k">Session strategies</span>
+          <h3>復習のやり方も選べる</h3>
+          <p>想起練習・インターリーブ・再認形式・精緻化。学習科学に基づく4つを、その場で切り替え。</p>
+          <p class="en">Retrieval practice, interleaving, recognition mode, elaboration.</p>
+        </div>
+        <div class="cell">
+          <span class="k">Bilingual</span>
+          <h3>日本語 ⇄ English</h3>
+          <p>カード1枚だけでも、デッキ全体でも切り替え。教材ごとの用語表があるので、訳語がぶれません。</p>
+          <p class="en">Flip one card or the whole deck. A per-material glossary keeps terminology identical across every AI call.</p>
+        </div>
+        <div class="cell">
+          <span class="k">Provenance</span>
+          <h3>出典に戻れる</h3>
+          <p>どのカードも、教材のどの一文から作られたかを保持。復習中に原文へ飛べます。</p>
+          <p class="en">Every card keeps the verbatim sentence it came from; jump back mid-review.</p>
+        </div>
+        <div class="cell">
+          <span class="k">Notes</span>
+          <h3>ノートとカードは地続き</h3>
+          <p>アウトライナー内蔵。書いた内容がそのまま出題対象になります。</p>
+          <p class="en">A built-in outliner where notes and cards are the same substance.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PRIVACY ============ -->
+  <section>
+    <div class="stack-lg">
+      <div class="stack">
+        <p class="eyebrow">Where your data lives</p>
+        <h2>全部、自分のパソコンの中</h2>
+        <p class="lead">
+          サーバーもアカウントもありません。<code style="font-family:var(--mono);font-size:.9em">127.0.0.1</code>
+          で動く、あなただけのアプリです。AI は<strong>あなた自身の Claude Code</strong> を呼び出すので、
+          教材が第三者に渡ることはありません。
+        </p>
+        <p class="en">
+          No server, no account, no telemetry. It binds to localhost and nothing else.
+          AI features shell out to <em>your own</em> Claude Code install — the app holds
+          no API key, and your materials never leave your machine. Back it up by copying
+          the folder; uninstall by deleting it.
+        </p>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>301</b><span>automated tests</span></div>
+        <div class="stat"><b>0</b><span>npm packages</span></div>
+        <div class="stat"><b>6</b><span>python deps</span></div>
+        <div class="stat"><b>0</b><span>servers</span></div>
+      </div>
+      <p class="en">
+        ビルド工程なし・CDN なし・オフラインで動作。 &nbsp;·&nbsp; No build step, no CDN,
+        works offline. Python · Flask · SQLite · vanilla JS.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ THE STORY ============ -->
+  <section>
+    <div class="stack">
+      <p class="eyebrow">Who built this</p>
+      <h2>自分が使うために、学生がひとりで作りました</h2>
+      <p class="lead">
+        既存の暗記アプリが「自分の教材」に合わなかったので、作ることにしました。
+        設計・実装・テストまで、機能ごとに区切って積み上げた個人プロジェクトです。
+      </p>
+      <p class="en">
+        StudyDash is a solo project by a student who wanted a study tool that fit their
+        own materials — Japanese textbooks, English exam prep, biology slides — instead
+        of bending those materials to fit an app. Built feature by feature, each phase
+        tested before the next one started.
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>StudyDash v1.0.0</span>
+    <span>招待制 / invite-only — 再配布はご遠慮ください</span>
+    <span class="spacer" style="flex:1"></span>
+    <span>© 2026</span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    "use strict";
+
+    /* ---------- theme toggle: explicit choice beats the OS in both directions ---------- */
+    var root = document.documentElement;
+    document.getElementById("theme").addEventListener("click", function () {
+      var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var cur = root.getAttribute("data-theme") || (dark ? "dark" : "light");
+      root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+      draw();
+    });
+
+    /* ---------- pacing calculator ---------- */
+    var cards = document.getElementById("cards");
+    var date = document.getElementById("date");
+    var perday = document.getElementById("perday");
+    var daysleft = document.getElementById("daysleft");
+    var note = document.getElementById("note");
+    var fill = document.getElementById("fill");
+
+    function today() {
+      var d = new Date();
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+    function iso(d) {
+      return d.getFullYear() + "-" +
+        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+        String(d.getDate()).padStart(2, "0");
+    }
+    // default: 31 days out, matching the app's own inclusive-of-today counting
+    var def = today();
+    def.setDate(def.getDate() + 30);
+    date.value = iso(def);
+    date.min = iso(today());
+
+    function recalc() {
+      var n = Math.max(1, Math.min(99999, parseInt(cards.value, 10) || 1));
+      var parts = (date.value || "").split("-");
+      var left = 1;
+      if (parts.length === 3) {
+        var target = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+        // inclusive of today, and a past date clamps to 1 — cramming, not crashing
+        left = Math.max(1, Math.round((target - today()) / 86400000) + 1);
+      }
+      var per = Math.ceil(n / left);
+      perday.textContent = per;
+      daysleft.textContent = left + (left === 1 ? " day left" : " days left");
+      note.textContent = left === 1
+        ? "今日が期限です。残り" + n + "枚を今日ぜんぶ見ます。"
+        : "期限まであと" + left + "日 → 1日" + per + "枚で全部見られます。";
+      // how much of the deck one day covers, floored so a huge deck still shows a sliver
+      fill.style.width = Math.max(2, Math.min(100, (per / n) * 100)) + "%";
+    }
+    cards.addEventListener("input", recalc);
+    date.addEventListener("input", recalc);
+    recalc();
+
+    /* ---------- forgetting curve ---------- */
+    var cv = document.getElementById("curve");
+    var ctx = cv.getContext("2d");
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var DAYS = 100;
+    var REVIEWS = [1, 6, 15, 38];      // the same SM-2 progression as the ruler
+    var progress = reduce ? 1 : 0;
+
+    function css(name) {
+      return getComputedStyle(root).getPropertyValue(name).trim();
+    }
+
+    // retention with reviews: each recall resets to 1 and lengthens stability
+    function retained(t) {
+      var s = 1.6, last = 0;
+      for (var i = 0; i < REVIEWS.length; i++) {
+        if (REVIEWS[i] > t) break;
+        last = REVIEWS[i];
+        s *= 2.4;
+      }
+      return Math.exp(-(t - last) / s);
+    }
+    function decayed(t) { return Math.exp(-t / 1.6); }
+
+    function draw() {
+      var dpr = window.devicePixelRatio || 1;
+      var w = cv.clientWidth, h = cv.clientHeight;
+      if (!w || !h) return;
+      cv.width = w * dpr; cv.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      var padL = 34, padR = 10, padT = 12, padB = 26;
+      var pw = w - padL - padR, ph = h - padT - padB;
+      var X = function (t) { return padL + (t / DAYS) * pw; };
+      var Y = function (r) { return padT + (1 - r) * ph; };
+
+      var rule = css("--rule"), ink3 = css("--ink-3"), accent = css("--accent");
+
+      // horizontal grid at 0 / 50 / 100% retention
+      ctx.strokeStyle = rule; ctx.lineWidth = 1;
+      ctx.font = "10px " + css("--mono").split(",")[0] + ", monospace";
+      ctx.fillStyle = ink3; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      [0, 0.5, 1].forEach(function (r) {
+        var y = Math.round(Y(r)) + 0.5;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+        ctx.fillText(Math.round(r * 100) + "%", padL - 7, y);
+      });
+
+      var end = DAYS * progress;
+
+      // no-review decay
+      ctx.strokeStyle = ink3; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      for (var t = 0; t <= end; t += 0.5) {
+        var x = X(t), y = Y(decayed(t));
+        t === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+
+      // with-review sawtooth — break the path at each review so the reset reads as a jump
+      ctx.strokeStyle = accent; ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      var pen = false;
+      for (var u = 0; u <= end; u += 0.5) {
+        if (REVIEWS.indexOf(Math.round(u)) !== -1 && Math.abs(u - Math.round(u)) < 1e-9) {
+          ctx.lineTo(X(u), Y(retained(u - 0.001)));
+          ctx.stroke(); ctx.beginPath(); pen = false;
+        }
+        var xx = X(u), yy = Y(retained(u));
+        pen ? ctx.lineTo(xx, yy) : (ctx.moveTo(xx, yy), pen = true);
+      }
+      ctx.stroke();
+
+      // review markers
+      ctx.fillStyle = accent; ctx.textAlign = "center"; ctx.textBaseline = "top";
+      REVIEWS.forEach(function (d) {
+        if (d > end) return;
+        var x = X(d), y = Y(1);
+        ctx.beginPath();
+        ctx.moveTo(x, y - 9); ctx.lineTo(x - 4.5, y - 2); ctx.lineTo(x + 4.5, y - 2);
+        ctx.closePath(); ctx.fill();
+        ctx.fillText(d + "d", x, h - padB + 6);
+      });
+    }
+
+    function animate() {
+      progress = Math.min(1, progress + 0.02);
+      draw();
+      if (progress < 1) requestAnimationFrame(animate);
+    }
+
+    if (reduce) { draw(); }
+    else if ("IntersectionObserver" in window) {
+      var seen = false;
+      new IntersectionObserver(function (es) {
+        es.forEach(function (e) {
+          if (e.isIntersecting && !seen) { seen = true; requestAnimationFrame(animate); }
+        });
+      }, { threshold: 0.25 }).observe(cv);
+      draw();
+    } else { progress = 1; draw(); }
+
+    window.addEventListener("resize", draw);
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+  })();
+</script>
