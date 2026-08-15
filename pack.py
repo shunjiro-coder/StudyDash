@@ -11,6 +11,7 @@ the same door — if it ever fires, something is tracked that should not be.
 """
 
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -46,6 +47,28 @@ def _git(*args):
 
 def tracked_files():
     return [p for p in _git("ls-files").splitlines() if p]
+
+
+# A tracked file can be perfectly innocent by NAME and still carry the owner's
+# home directory in its CONTENTS — com.studydash.plist did exactly that, telling
+# every recipient the owner's username. Names alone cannot catch it.
+HOME_PATH_RE = re.compile(rb"(/Users/|/home/|C:\\Users\\)([A-Za-z0-9._-]+)")
+SCAN_EXTS = (".py", ".txt", ".md", ".json", ".html", ".js", ".css", ".plist",
+             ".command", ".bat", ".cfg", ".toml", ".yml", ".yaml", "Makefile")
+
+
+def scan_contents(read):
+    """`read(name) -> bytes` over the shipped files. Returns [(name, leaked)]."""
+    hits = []
+    for name in read.names:
+        if not name.endswith(SCAN_EXTS):
+            continue
+        for _, who in HOME_PATH_RE.findall(read(name)):
+            user = who.decode("utf-8", "replace")
+            # <user> is the scrubbed placeholder support.py writes on purpose
+            if user not in ("<user>", "someone", "USER", "you"):
+                hits.append((name, user))
+    return hits
 
 
 def audit(names):
@@ -91,19 +114,27 @@ def build():
     with zipfile.ZipFile(out) as z:
         inside = [n[len("StudyDash/"):] for n in z.namelist()
                   if n.startswith("StudyDash/")]
-    problems, missing = audit(inside)
-    if problems or missing:
+        problems, missing = audit(inside)
+
+        def read(name):
+            return z.read("StudyDash/" + name)
+        read.names = inside
+        leaks = scan_contents(read)
+
+    if problems or missing or leaks:
         os.remove(out)
         print("BUILT ZIP FAILED ITS OWN AUDIT — deleted.")
         for p in problems:
-            print("    private:", p)
+            print("    private file:", p)
         for m in missing:
             print("    missing:", m)
+        for name, who in leaks:
+            print("    local path in %s (user %r)" % (name, who))
         return None
 
     mb = os.path.getsize(out) / (1024 * 1024)
     print("  packed %d files -> %s (%.1f MB)" % (len(inside), out, mb))
-    print("  audit: no private data, all required files present")
+    print("  audit: no private data, no local paths, all required files present")
     return out
 
 

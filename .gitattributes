@@ -16,3 +16,8 @@ site/           export-ignore
 # with a trailing \r and report "command not found".
 *.bat           -text
 *.command       -text
+
+# Owner-only machine config: it hardcodes an absolute path under the owner's home
+# directory, is meaningless on someone else's machine, and would tell every
+# recipient the owner's username.
+com.studydash.plist  export-ignore
