@@ -1,0 +1,6 @@
+# Files that belong to the repo but not in a recipient's copy. `git archive`
+# honours export-ignore, and pack.py builds the zip with git archive, so this is
+# the one place that decides what a recipient does NOT get.
+DISTRIBUTE.md   export-ignore
+site/           export-ignore
+.gitattributes  export-ignore
