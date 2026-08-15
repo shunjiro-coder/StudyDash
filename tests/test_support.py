@@ -5,6 +5,7 @@ else, so it must carry counts and environment, never the person's study content.
 """
 
 import json
+import os
 
 import pytest
 
@@ -134,3 +135,18 @@ def test_report_json_payload_shape(clock):
     assert set(payload) == {"kind", "message", "environment", "counts",
                             "error", "log_included"}
     assert json.dumps(payload)   # must stay JSON-serializable for the endpoint
+
+
+# -------------------- doctor / app agreement --------------------
+def test_doctor_resolves_claude_the_same_way_the_app_does():
+    """Regression: doctor checked only PATH while ai.resolve_claude also falls back
+    to ~/.local/bin — where claude actually installs. A recipient with a working
+    install was told the AI was unavailable while the app was using it fine."""
+    import ai
+    import doctor
+    app_path = ai.resolve_claude()
+    doc_path = doctor._resolve_claude()
+    if doc_path is None:
+        assert not os.path.isfile(app_path)   # neither found it: consistent
+    else:
+        assert os.path.realpath(doc_path) == os.path.realpath(app_path)

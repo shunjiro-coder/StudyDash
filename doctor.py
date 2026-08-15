@@ -55,10 +55,13 @@ def check_flask():
     return _c(OK, "Flask あり", "Flask present")
 
 
-def _claude_override():
-    """The app resolves `claude_bin` from settings before falling back to PATH; read
-    the same key here (by hand, no db import — doctor runs before deps exist) so a
-    working install outside PATH isn't reported as missing."""
+def _resolve_claude():
+    """Mirror ai.resolve_claude EXACTLY: settings override, then PATH, then the
+    per-user install dir. Read by hand (no db/ai import — doctor runs before the
+    deps exist). Keeping the order identical matters: claude installs to
+    ~/.local/bin, which is often NOT on PATH, so checking only PATH told people
+    the AI was unavailable while the app was happily using it.
+    """
     import json
     for name in ("settings.local.json", "settings.json"):
         try:
@@ -70,12 +73,20 @@ def _claude_override():
             got = os.path.expanduser(got)
             if os.path.exists(got):
                 return got
+    found = shutil.which("claude")
+    if found:
+        return found
+    for fallback in ("~/.local/bin/claude",
+                     r"~\AppData\Local\Programs\claude\claude.cmd"):
+        path = os.path.expanduser(fallback)
+        if os.path.exists(path):
+            return path
     return None
 
 
 def check_claude():
     """AI is optional: without it StudyDash still runs as a manual SRS + notes app."""
-    found = _claude_override() or shutil.which("claude")
+    found = _resolve_claude()
     if not found:
         return _c(WARN, "claude CLI が見つかりません（AI機能はオフ・他は全部使えます）",
                   "claude CLI not found (AI features off; everything else works)",
