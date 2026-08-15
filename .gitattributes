@@ -4,3 +4,15 @@
 DISTRIBUTE.md   export-ignore
 site/           export-ignore
 .gitattributes  export-ignore
+
+# Launchers are committed with the exact bytes their interpreter needs, and marked
+# -text so NOTHING re-wraps them: not a clone on another platform, not git archive
+# (which pack.py builds the zip with), not a contributor's core.autocrlf.
+#
+# .bat must be CRLF: cmd.exe implements `goto` by seeking through the file, and
+# with LF-only endings that seek lands mid-line, so the jump fails with "cannot
+# find the batch label" — Update-Windows.bat's `goto :dirty` is exactly that shape.
+# .command must be LF: bash would otherwise read the shebang and every command
+# with a trailing \r and report "command not found".
+*.bat           -text
+*.command       -text
