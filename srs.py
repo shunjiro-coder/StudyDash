@@ -18,7 +18,7 @@ grand total, and day-spread overdue cards (redistribute) instead of dumping them
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import db
 
@@ -30,6 +30,84 @@ def _ef_update(ef, q):
     return max(1.3, round(ef2, 4))
 
 
+# The four buttons in FSRS's own 1..4 scale. Deliberately separate from QUALITY
+# (SM-2's 0-5 scale, where hard=3/good=4/easy=5): they are different algorithms'
+# inputs that happen to share button labels, and a test asserts they stay distinct.
+FSRS_GRADE = {"again": 1, "hard": 2, "good": 3, "easy": 4}
+
+VALID_SCHEDULERS = ("sm2", "fsrs")
+DEFAULT_RETENTION = 0.9
+
+
+def scheduler_name():
+    """Which scheduler is active. SM-2 unless explicitly switched — an existing
+    deck must never have its scheduling changed underneath it."""
+    s = (db.load_settings().get("scheduler") or "sm2").strip().lower()
+    return s if s in VALID_SCHEDULERS else "sm2"
+
+
+def target_retention():
+    try:
+        r = float(db.load_settings().get("fsrs_retention") or DEFAULT_RETENTION)
+    except (TypeError, ValueError):
+        return DEFAULT_RETENTION
+    # Outside this band the schedule stops being useful: 0.99 never lets a card
+    # go, 0.7 forgets most of them before they come back.
+    return min(0.97, max(0.70, r))
+
+
+def _elapsed_days(card_id):
+    """Days since this card was last answered; 0 if it never has been."""
+    r = db.query_one("SELECT reviewed_at FROM reviews WHERE card_id=? "
+                     "ORDER BY id DESC LIMIT 1", (card_id,))
+    if not r or not r["reviewed_at"]:
+        return 0.0
+    last = db.parse_iso(r["reviewed_at"])
+    if last is None:
+        return 0.0                       # unparseable: treat as "just now"
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return max(0.0, (db.now_dt() - last).total_seconds() / 86400.0)
+
+
+def _fsrs_state(card):
+    """(stability, difficulty) or (None, None) for a card FSRS has not seen."""
+    raw = card["fsrs_json"] if "fsrs_json" in card.keys() else None
+    if not raw:
+        return None, None
+    try:
+        obj = json.loads(raw)
+        return float(obj["s"]), float(obj["d"])
+    except (ValueError, TypeError, KeyError):
+        return None, None   # treat corrupt state as a first review, never crash
+
+
+def _answer_fsrs(card_id, c, grade):
+    """FSRS-4.5 branch. Leaves SM-2's current_ease untouched so switching back
+    resumes exactly where SM-2 left off."""
+    import fsrs
+
+    s0, d0 = _fsrs_state(c)
+    s, d, interval = fsrs.review(s0, d0, _elapsed_days(card_id),
+                                 FSRS_GRADE[grade], target_retention())
+    reps = 0 if grade == "again" else (c["repetitions"] or 0) + 1
+    ease = c["current_ease"] or 2.5
+    next_due_iso = db.to_utc_iso(db.now_dt() + timedelta(days=interval))
+    db.write_many([
+        ("UPDATE cards SET state='review', repetitions=?, current_interval=?, "
+         "fsrs_json=?, next_due_at=? WHERE id=?",
+         (reps, interval, json.dumps({"s": round(s, 4), "d": round(d, 4)}),
+          next_due_iso, card_id)),
+        ("INSERT INTO reviews (card_id, reviewed_at, grade, interval_days, "
+         "ease_factor) VALUES (?, ?, ?, ?, ?)",
+         (card_id, db.now_utc_iso(), grade, interval, ease)),
+    ])
+    return {"card_id": card_id, "grade": grade, "repetitions": reps,
+            "interval_days": interval, "ease": ease, "next_due_at": next_due_iso,
+            "scheduler": "fsrs", "stability": round(s, 4),
+            "difficulty": round(d, 4)}
+
+
 def answer(card_id, grade):
     """Apply a review grade: update the card + append a reviews row."""
     q = QUALITY.get(grade)
@@ -38,6 +116,9 @@ def answer(card_id, grade):
     c = db.query_one("SELECT * FROM cards WHERE id=?", (card_id,))
     if not c:
         raise ValueError("no card")
+
+    if scheduler_name() == "fsrs":
+        return _answer_fsrs(card_id, c, grade)
 
     ef = _ef_update(c["current_ease"] or 2.5, q)
     if q < 3:  # again -> lapse

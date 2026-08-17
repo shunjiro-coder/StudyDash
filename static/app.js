@@ -629,6 +629,45 @@ function autoStartRow() {
   return lab;
 }
 
+// Phase O: which algorithm decides when a card comes back. SM-2 is the default
+// and stays it; FSRS is offered, not imposed, because switching changes the
+// schedule of an entire existing deck.
+function schedulerRow() {
+  const wrap = el("div", "sched-row");
+  const cur = (S.meta && S.meta.scheduler) || "sm2";
+  wrap.appendChild(el("span", "sched-label", "出題間隔の決め方"));
+  const chips = el("div", "sched-chips");
+  [["sm2", "SM-2", "定番。正解するほど間隔が伸びます。"],
+   ["fsrs", "FSRS", "記憶の持ちを推定。得意な札は早く卒業、苦手な札は残ります。"],
+  ].forEach(([id, label, why]) => {
+    const b = el("button", "sm-chip" + (id === cur ? " on" : ""), label);
+    b.type = "button";
+    b.title = why;
+    b.onclick = async () => {
+      if (id === cur) return;
+      const restore = btnBusy(b, "切替中…");
+      try {
+        const got = await api("/api/settings", {
+          method: "PATCH", body: JSON.stringify({ scheduler: id }),
+        });
+        if (S.meta) S.meta.scheduler = got.scheduler;
+      } catch (e) {
+        restore();
+        toast("切り替えに失敗しました");
+        return;
+      }
+      restore();
+      renderReview();
+    };
+    chips.appendChild(b);
+  });
+  wrap.appendChild(chips);
+  wrap.appendChild(el("div", "sched-note", cur === "fsrs"
+    ? "FSRS で計算中。これまでの SM-2 の記録は残っているので、いつでも戻せます。"
+    : "SM-2 で計算中。"));
+  return wrap;
+}
+
 function strategyPicker() {
   const wrap = el("div", "strat-wrap");
   const head = el("div", "strat-head");
@@ -684,6 +723,7 @@ async function renderReviewHome(p) {
   }
   if (due > 0) { const b = el("button", "btn primary", "始める"); b.style.marginTop = "12px"; b.onclick = () => loadReviewQueue("normal"); c.appendChild(b); }
   c.appendChild(autoStartRow());
+  c.appendChild(schedulerRow());
   c.appendChild(strategyPicker());
   p.appendChild(c);
 

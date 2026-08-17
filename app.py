@@ -336,6 +336,7 @@ def api_meta():
                  "monthly_budget": settings.get("monthly_call_budget", 200)},
         "content_lang": db.content_lang(),   # output language for generated study content
         "review_new_cap": int(settings.get("review_new_cap", 10)),   # L: pacing display
+        "scheduler": srs.scheduler_name(),   # O: SM-2 (default) or FSRS
         "version": version.__version__,   # M: shown in the footer, asked for in support
         "backup": backup.status(),   # passive health: {latest, age_days}
     })
@@ -372,8 +373,13 @@ def api_feedback():
 def api_settings():
     """Editable app settings. Currently just content_lang (auto|ja|en) — the output
     language for AI-generated study content (cards/quiz/summary)."""
+    def _state():
+        return {"content_lang": db.content_lang(),
+                "scheduler": srs.scheduler_name(),
+                "fsrs_retention": srs.target_retention()}
+
     if request.method == "GET":
-        return jsonify({"content_lang": db.content_lang()})
+        return jsonify(_state())
     data = request.get_json(silent=True) or {}
     patch = {}
     if "content_lang" in data:
@@ -381,10 +387,23 @@ def api_settings():
         if v not in db.VALID_CONTENT_LANGS:
             abort(400, "invalid content_lang")
         patch["content_lang"] = v
+    if "scheduler" in data:
+        v = db.text_cell(data.get("scheduler")).strip().lower()
+        if v not in srs.VALID_SCHEDULERS:
+            abort(400, "invalid scheduler")
+        patch["scheduler"] = v
+    if "fsrs_retention" in data:
+        try:
+            r = float(data.get("fsrs_retention"))
+        except (TypeError, ValueError):
+            abort(400, "invalid fsrs_retention")
+        if not 0.70 <= r <= 0.97:
+            abort(400, "fsrs_retention must be between 0.70 and 0.97")
+        patch["fsrs_retention"] = r
     if not patch:
         abort(400, "nothing to update")
     db.save_settings(patch)
-    return jsonify({"content_lang": db.content_lang()})
+    return jsonify(_state())
 
 
 # --------------------------------------------------------------------------

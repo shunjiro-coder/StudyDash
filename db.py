@@ -637,6 +637,16 @@ def _migrate_n_feedback(conn):
            )""")
 
 
+def _migrate_o_fsrs(conn):
+    # Phase O: optional FSRS scheduling. The card's memory model lives in one
+    # nullable JSON blob ({"s": stability, "d": difficulty}) rather than two
+    # columns, matching media_json/translation_json. NULL means "never reviewed
+    # under FSRS", which is also every existing card — so switching schedulers
+    # cannot corrupt a deck: SM-2's columns are left exactly as they are.
+    # Nothing here feeds the D-5 content_hash, which is front/back only.
+    _ensure_column(conn, "cards", "fsrs_json", "TEXT")
+
+
 MIGRATIONS = [
     ("b1_docs_rems", "B", _migrate_b1),
     ("e_source_loc", "E", _migrate_e_source_loc),
@@ -649,6 +659,7 @@ MIGRATIONS = [
     ("k_material_glossary", "K", _migrate_k_glossary),
     ("l_target_date", "L", _migrate_l_target_date),
     ("n_feedback", "N", _migrate_n_feedback),
+    ("o_fsrs", "O", _migrate_o_fsrs),
 ]
 
 

@@ -5,6 +5,21 @@ Newest first — read this after an update to see what changed.
 
 ---
 
+## v1.2.0 — 2026-08-16
+
+### 追加 / Added
+- **FSRS を選べるようになりました** — 復習タブの「出題間隔の決め方」で SM-2 と
+  FSRS を切り替えられます。FSRS は「その記憶がいまどれくらい持つか」を推定して
+  間隔を決めるので、得意な札は早く卒業し、苦手な札は手元に残ります。
+  *Pick your scheduler in the review tab. FSRS models how long each memory
+  currently lasts, so easy cards leave faster and lapsing cards stop being
+  flung into the far future.*
+- **SM-2 のままでも今までどおり。** 既定は SM-2 で、切り替えても SM-2 の記録は
+  消えないので、いつでも元に戻せます。
+  *SM-2 stays the default and its state is preserved, so the switch is reversible.*
+
+---
+
 ## v1.1.0 — 2026-08-14
 
 ### 追加 / Added
